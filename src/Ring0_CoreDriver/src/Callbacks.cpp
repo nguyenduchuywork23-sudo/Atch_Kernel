@@ -1,5 +1,5 @@
-#include "Callbacks.h"
-#include "IoctlHandler.h"
+#include "../inc/Callbacks.h"
+#include "../inc/IoctlHandler.h"
 
 // Biến lưu cookie đăng ký
 static LARGE_INTEGER g_RegistryCookie = { 0 };

@@ -1,5 +1,5 @@
-#include "IoctlHandler.h"
-#include "SharedDef.h"
+#include "../inc/IoctlHandler.h"
+#include "../../include/SharedDef.h"
 
 // Biến lưu trữ Request của Inverted Call
 static WDFREQUEST g_PendingListenRequest = NULL;

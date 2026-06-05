@@ -1,4 +1,4 @@
-#include "MemorySync.h"
+#include "../inc/MemorySync.h"
 
 // Sử dụng tag riêng để dễ theo dõi Memory Leak trong WinDbg (Pool Tagging)
 #define ATCHK_POOL_TAG 'igiV' 

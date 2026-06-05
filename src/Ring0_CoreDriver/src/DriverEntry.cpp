@@ -1,8 +1,8 @@
 #include <ntddk.h>
 #include <wdf.h>
-#include "SharedDef.h"
-#include "IoctlHandler.h"
-#include "Callbacks.h"
+#include "../../include/SharedDef.h"
+#include "../inc/IoctlHandler.h"
+#include "../inc/Callbacks.h"
 
 // Khai báo tên thiết bị và DOS device name
 DECLARE_CONST_UNICODE_STRING(ntDeviceName, L"\\Device\\AtchKernel");
