@@ -3,6 +3,11 @@
 #include "../../include/SharedDef.h"
 #include "../inc/IoctlHandler.h"
 #include "../inc/Callbacks.h"
+#include "../inc/AntiBYOVD.h"
+#include "../inc/AntiVM.h"
+#include "../inc/HWID.h"
+#include "../inc/LoadImageNotify.h"
+#include "../inc/ThreadNotify.h"
 
 // Khai báo tên thiết bị và DOS device name
 DECLARE_CONST_UNICODE_STRING(ntDeviceName, L"\\Device\\AtchKernel");
@@ -96,6 +101,32 @@ extern "C" NTSTATUS DriverEntry(
         KdPrint(("AtchKernel: Cảnh báo - Khởi tạo một số callbacks bảo mật thất bại - Lỗi 0x%X\n", status));
     }
 
+    // Khởi tạo các module chống gian lận mới
+    status = InitLoadImageNotify(DriverObject);
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("AtchKernel: InitLoadImageNotify thất bại - Lỗi 0x%X\n", status));
+    }
+
+    status = InitThreadNotify();
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("AtchKernel: InitThreadNotify thất bại - Lỗi 0x%X\n", status));
+    }
+
+    if (DetectHypervisor()) {
+        KdPrint(("AtchKernel: Phát hiện môi trường Hypervisor!\n"));
+    } else {
+        KdPrint(("AtchKernel: Không phát hiện Hypervisor.\n"));
+    }
+
+    UNICODE_STRING hwid;
+    status = GenerateHWID(&hwid);
+    if (NT_SUCCESS(status)) {
+        KdPrint(("AtchKernel: HWID sinh ra: %wZ\n", &hwid));
+        ExFreePoolWithTag(hwid.Buffer, 'diWH');
+    } else {
+        KdPrint(("AtchKernel: Sinh HWID thất bại - Lỗi 0x%X\n", status));
+    }
+
     KdPrint(("AtchKernel: Driver khởi tạo thành công!\n"));
     return STATUS_SUCCESS;
 }
@@ -105,5 +136,7 @@ extern "C" void EvtDriverUnload(_In_ WDFDRIVER Driver)
     UNREFERENCED_PARAMETER(Driver);
     KdPrint(("AtchKernel: EvtDriverUnload - Hủy đăng ký callbacks.\n"));
     
+    UnloadThreadNotify();
+    UnloadImageNotify();
     UnregisterSecurityCallbacks();
 }

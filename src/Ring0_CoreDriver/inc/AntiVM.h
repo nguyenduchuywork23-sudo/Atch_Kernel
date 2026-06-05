@@ -1,0 +1,9 @@
+#ifndef ANTIVM_H
+#define ANTIVM_H
+
+#include <ntddk.h>
+#include <intrin.h>
+
+BOOLEAN DetectHypervisor();
+
+#endif // ANTIVM_H
