@@ -27,32 +27,33 @@ void ProcessNotifyCallbackEx(
             BOOLEAN isBlacklisted = FALSE;
             
             if (imageName->Buffer != NULL && imageName->Length > 0) {
-                // Ensure null termination for safe search
-                WCHAR safeBuffer[256];
-                size_t bytesToCopy = imageName->Length;
-                if (bytesToCopy > sizeof(safeBuffer) - sizeof(WCHAR)) {
-                    bytesToCopy = sizeof(safeBuffer) - sizeof(WCHAR);
+                // Extract filename
+                USHORT lastSlashPos = 0;
+                for (USHORT i = 0; i < imageName->Length / sizeof(WCHAR); i++) {
+                    if (imageName->Buffer[i] == L'\\') {
+                        lastSlashPos = i + 1;
+                    }
                 }
-                RtlCopyMemory(safeBuffer, imageName->Buffer, bytesToCopy);
-                safeBuffer[bytesToCopy / sizeof(WCHAR)] = L'\0';
-
-                UNICODE_STRING safeUs;
-                RtlInitUnicodeString(&safeUs, safeBuffer);
                 
-                // Convert to lowercase for basic check
-                for (USHORT i = 0; i < safeUs.Length / sizeof(WCHAR); i++) {
-                    safeUs.Buffer[i] = RtlDowncaseUnicodeChar(safeUs.Buffer[i]);
-                }
+                UNICODE_STRING fileName;
+                fileName.Buffer = &imageName->Buffer[lastSlashPos];
+                fileName.Length = imageName->Length - (lastSlashPos * sizeof(WCHAR));
+                fileName.MaximumLength = fileName.Length;
 
-                if (wcsstr(safeUs.Buffer, L"cheatengine-x86_64.exe") != NULL ||
-                    wcsstr(safeUs.Buffer, L"processhacker.exe") != NULL ||
-                    wcsstr(safeUs.Buffer, L"ida64.exe") != NULL) {
+                UNICODE_STRING ceName, phName, idaName;
+                RtlInitUnicodeString(&ceName, L"cheatengine-x86_64.exe");
+                RtlInitUnicodeString(&phName, L"processhacker.exe");
+                RtlInitUnicodeString(&idaName, L"ida64.exe");
+
+                if (RtlCompareUnicodeString(&fileName, &ceName, TRUE) == 0 ||
+                    RtlCompareUnicodeString(&fileName, &phName, TRUE) == 0 ||
+                    RtlCompareUnicodeString(&fileName, &idaName, TRUE) == 0) {
                     isBlacklisted = TRUE;
                 }
 
                 if (isBlacklisted) {
                     CreateInfo->CreationStatus = STATUS_ACCESS_DENIED;
-                    NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &safeUs, 2); // 2 could be PROCESS_BLACKLISTED
+                    NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, imageName, 2); // 2 could be PROCESS_BLACKLISTED
                 }
             }
         }
@@ -120,9 +121,9 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
             // Block modification if it's not a kernel handle
             if (!OperationInformation->KernelHandle) {
                 if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE) {
-                    OperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME);
+                    OperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME | PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION);
                 } else if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) {
-                    OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME);
+                    OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME | PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION);
                 }
             }
         }
@@ -130,6 +131,23 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
     }
 
     return OB_PREOP_SUCCESS;
+}
+
+void ForceKillExamProcess(HANDLE ProcessId)
+{
+    HANDLE processHandle = NULL;
+    OBJECT_ATTRIBUTES objAttr;
+    CLIENT_ID clientId;
+
+    InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+    clientId.UniqueProcess = ProcessId;
+    clientId.UniqueThread = NULL;
+
+    NTSTATUS status = ZwOpenProcess(&processHandle, GENERIC_ALL, &objAttr, &clientId);
+    if (status == STATUS_SUCCESS && processHandle != NULL) {
+        ZwTerminateProcess(processHandle, STATUS_ACCESS_DENIED);
+        ZwClose(processHandle);
+    }
 }
 
 NTSTATUS RegisterSecurityCallbacks(PDRIVER_OBJECT DriverObject)

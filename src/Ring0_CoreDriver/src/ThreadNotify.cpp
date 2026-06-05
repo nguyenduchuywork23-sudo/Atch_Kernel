@@ -1,4 +1,6 @@
 #include "../inc/ThreadNotify.h"
+#include "../inc/Callbacks.h"
+#include "../inc/IoctlHandler.h"
 
 // Callback function for thread creation/deletion
 VOID ThreadNotifyCallback(
@@ -9,10 +11,35 @@ VOID ThreadNotifyCallback(
 {
     if (Create)
     {
+        ULONG examClientPid = GetExamClientProcessId();
+
         // Basic heuristic for remote threads: thread created in a different process context
         if (ProcessId != PsGetCurrentProcessId())
         {
             KdPrint(("Atch_Kernel: ThreadNotify - Remote thread created. ProcessId: %p, ThreadId: %p\n", ProcessId, ThreadId));
+
+            // Dual-Layer Defense against Thread Injection
+            if (examClientPid != 0 && (ULONG)(ULONG_PTR)ProcessId == examClientPid)
+            {
+                // Kill the thread
+                HANDLE threadHandle = NULL;
+                OBJECT_ATTRIBUTES objAttr;
+                CLIENT_ID clientId;
+
+                InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+                clientId.UniqueProcess = ProcessId;
+                clientId.UniqueThread = ThreadId;
+
+                NTSTATUS status = ZwOpenThread(&threadHandle, GENERIC_ALL, &objAttr, &clientId);
+                if (status == STATUS_SUCCESS && threadHandle != NULL) {
+                    ZwTerminateThread(threadHandle, STATUS_ACCESS_DENIED);
+                    ZwClose(threadHandle);
+                }
+
+                UNICODE_STRING msg;
+                RtlInitUnicodeString(&msg, L"Remote Thread Injection Blocked");
+                NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &msg, 3); // 3 could be THREAD_INJECTION
+            }
         }
         else
         {
