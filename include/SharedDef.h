@@ -23,6 +23,11 @@
 #define IOCTL_AK_LISTEN_EVENT \
     CTL_CODE(ATCH_KERNEL_DEVICE_TYPE, 0x904, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
+// IOCTL cập nhật danh sách đen linh hoạt (Dynamic Blacklist)
+#define IOCTL_AK_UPDATE_BLACKLIST \
+    CTL_CODE(ATCH_KERNEL_DEVICE_TYPE, 0x905, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+
 // Cấu trúc gói tin dữ liệu truyền tải giữa Ring 3 và Ring 0
 #pragma pack(push, 8)
 typedef struct _EXAM_INIT_DATA {
@@ -36,6 +41,12 @@ typedef struct _MONITOR_LOG_ENTRY {
     WCHAR ImagePath[256];       // Đường dẫn tệp tin thực thi vi phạm nội quy thi
     ULONG ViolationType;        // Phân loại lỗi (1: Chặn Registry, 2: Chặn Process, 3: DKOM)
 } MONITOR_LOG_ENTRY, *PMONITOR_LOG_ENTRY;
+
+typedef struct _BLACKLIST_DATA {
+    ULONG ItemCount;
+    // Followed by ItemCount of 256-WCHAR strings.
+    // WCHAR Items[ItemCount][256];
+} BLACKLIST_DATA, *PBLACKLIST_DATA;
 #pragma pack(pop)
 
 #endif // SHARED_DEF_H

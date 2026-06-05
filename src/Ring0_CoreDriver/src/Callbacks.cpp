@@ -17,44 +17,10 @@ void ProcessNotifyCallbackEx(
 
     if (CreateInfo != NULL) {
         if (CreateInfo->ImageFileName != NULL) {
-            // Basic blacklist
-            PCUNICODE_STRING imageName = CreateInfo->ImageFileName;
-            
-            // Note: In a real implementation we would do a case-insensitive check and 
-            // extract just the filename if the full path is provided.
-            // For this example, we just check if it contains the blacklisted names.
-            
-            BOOLEAN isBlacklisted = FALSE;
-            
-            if (imageName->Buffer != NULL && imageName->Length > 0) {
-                // Extract filename
-                USHORT lastSlashPos = 0;
-                for (USHORT i = 0; i < imageName->Length / sizeof(WCHAR); i++) {
-                    if (imageName->Buffer[i] == L'\\') {
-                        lastSlashPos = i + 1;
-                    }
-                }
-                
-                UNICODE_STRING fileName;
-                fileName.Buffer = &imageName->Buffer[lastSlashPos];
-                fileName.Length = imageName->Length - (lastSlashPos * sizeof(WCHAR));
-                fileName.MaximumLength = fileName.Length;
-
-                UNICODE_STRING ceName, phName, idaName;
-                RtlInitUnicodeString(&ceName, L"cheatengine-x86_64.exe");
-                RtlInitUnicodeString(&phName, L"processhacker.exe");
-                RtlInitUnicodeString(&idaName, L"ida64.exe");
-
-                if (RtlCompareUnicodeString(&fileName, &ceName, TRUE) == 0 ||
-                    RtlCompareUnicodeString(&fileName, &phName, TRUE) == 0 ||
-                    RtlCompareUnicodeString(&fileName, &idaName, TRUE) == 0) {
-                    isBlacklisted = TRUE;
-                }
-
-                if (isBlacklisted) {
-                    CreateInfo->CreationStatus = STATUS_ACCESS_DENIED;
-                    NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, imageName, 2); // 2 could be PROCESS_BLACKLISTED
-                }
+            // Check dynamic blacklist
+            if (IsProcessBlacklisted(CreateInfo->ImageFileName)) {
+                CreateInfo->CreationStatus = STATUS_ACCESS_DENIED;
+                NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, CreateInfo->ImageFileName, 2); // 2 could be PROCESS_BLACKLISTED
             }
         }
     }
