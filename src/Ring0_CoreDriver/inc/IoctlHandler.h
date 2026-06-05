@@ -13,5 +13,7 @@ extern "C" {
     EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
     
     // API cho Inverted Call (gọi từ module Callbacks)
-    void NotifyViolationToRing3(ULONG ProcessId, const WCHAR* ImagePath, ULONG ViolationType);
+    void NotifyViolationToRing3(ULONG ProcessId, PCUNICODE_STRING ImagePath, ULONG ViolationType);
+
+    ULONG GetExamClientProcessId();
 }

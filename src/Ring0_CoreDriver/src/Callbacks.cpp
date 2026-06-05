@@ -16,16 +16,45 @@ void ProcessNotifyCallbackEx(
     UNREFERENCED_PARAMETER(Process);
 
     if (CreateInfo != NULL) {
-        // Tiến trình đang được tạo
-        // Mẫu: Phát hiện tiến trình đen (ví dụ "CheatEngine.exe")
-        // Ở code thật sẽ có một cấu trúc Whitelist/Blacklist để kiểm tra.
-        // Đây là code minh họa chặn và báo cáo về Ring 3
-        
         if (CreateInfo->ImageFileName != NULL) {
-            // Ví dụ logic blacklist giả định
-            // Nếu phát hiện gian lận:
-            // CreateInfo->CreationStatus = STATUS_ACCESS_DENIED;
-            // NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, CreateInfo->ImageFileName->Buffer, 2);
+            // Basic blacklist
+            PCUNICODE_STRING imageName = CreateInfo->ImageFileName;
+            
+            // Note: In a real implementation we would do a case-insensitive check and 
+            // extract just the filename if the full path is provided.
+            // For this example, we just check if it contains the blacklisted names.
+            
+            BOOLEAN isBlacklisted = FALSE;
+            
+            if (imageName->Buffer != NULL && imageName->Length > 0) {
+                // Ensure null termination for safe search
+                WCHAR safeBuffer[256];
+                size_t bytesToCopy = imageName->Length;
+                if (bytesToCopy > sizeof(safeBuffer) - sizeof(WCHAR)) {
+                    bytesToCopy = sizeof(safeBuffer) - sizeof(WCHAR);
+                }
+                RtlCopyMemory(safeBuffer, imageName->Buffer, bytesToCopy);
+                safeBuffer[bytesToCopy / sizeof(WCHAR)] = L'\0';
+
+                UNICODE_STRING safeUs;
+                RtlInitUnicodeString(&safeUs, safeBuffer);
+                
+                // Convert to lowercase for basic check
+                for (USHORT i = 0; i < safeUs.Length / sizeof(WCHAR); i++) {
+                    safeUs.Buffer[i] = RtlDowncaseUnicodeChar(safeUs.Buffer[i]);
+                }
+
+                if (wcsstr(safeUs.Buffer, L"cheatengine-x86_64.exe") != NULL ||
+                    wcsstr(safeUs.Buffer, L"processhacker.exe") != NULL ||
+                    wcsstr(safeUs.Buffer, L"ida64.exe") != NULL) {
+                    isBlacklisted = TRUE;
+                }
+
+                if (isBlacklisted) {
+                    CreateInfo->CreationStatus = STATUS_ACCESS_DENIED;
+                    NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &safeUs, 2); // 2 could be PROCESS_BLACKLISTED
+                }
+            }
         }
     }
 }
@@ -44,9 +73,19 @@ NTSTATUS RegistryCallback(
     if (notifyClass == RegNtPreSetValueKey) {
         PREG_PRE_SET_VALUE_KEY_INFORMATION preSetInfo = (PREG_PRE_SET_VALUE_KEY_INFORMATION)Argument2;
         if (preSetInfo != NULL && preSetInfo->Object != NULL) {
-            // Lấy tên khóa Registry (đòi hỏi code phân tích phức tạp hơn bằng ObQueryNameString)
-            // Nếu phát hiện nhánh Registry cấm -> trả về STATUS_ACCESS_DENIED
-            // Đồng thời kích hoạt Alert về Ring 3: NotifyViolationToRing3(0, L"Registry\\IFEO", 1);
+            PCUNICODE_STRING valueName = preSetInfo->ValueName;
+            
+            if (valueName != NULL && valueName->Buffer != NULL) {
+                UNICODE_STRING targetName;
+                RtlInitUnicodeString(&targetName, L"Debugger");
+                // Compare accurately using RtlCompareUnicodeString which safely handles Length
+                if (RtlCompareUnicodeString(valueName, &targetName, TRUE) == 0) {
+                    UNICODE_STRING regPath;
+                    RtlInitUnicodeString(&regPath, L"Registry\\IFEO");
+                    NotifyViolationToRing3(0, &regPath, 1); // 1 could be REGISTRY_TAMPERING
+                    return STATUS_ACCESS_DENIED;
+                }
+            }
         }
     }
     return STATUS_SUCCESS;
@@ -60,23 +99,34 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
 {
     UNREFERENCED_PARAMETER(RegistrationContext);
 
+    if (OperationInformation == NULL) {
+        return OB_PREOP_SUCCESS;
+    }
+
     if (OperationInformation->ObjectType != *PsProcessType) {
         return OB_PREOP_SUCCESS;
     }
 
-    // Nếu tiến trình bị truy cập là Client Ring 3 (được lưu trong ClientProcessId khi Handshake)
-    // Code thực tế sẽ lấy EPROCESS của ClientProcessId và so sánh với OperationInformation->Object
-    
-    if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE ||
-        OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) 
-    {
-        ACCESS_MASK* pAccessBits = &OperationInformation->Parameters->CreateHandleInformation.DesiredAccess;
-        if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) {
-            pAccessBits = &OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess;
-        }
+    ULONG clientPid = GetExamClientProcessId();
+    if (clientPid == 0) {
+        return OB_PREOP_SUCCESS;
+    }
 
-        // Tước quyền Terminate, VM_WRITE, VM_READ để bảo vệ
-        // *pAccessBits &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME);
+    PEPROCESS clientProcess = NULL;
+    NTSTATUS status = PsLookupProcessByProcessId(UlongToHandle(clientPid), &clientProcess);
+    
+    if (NT_SUCCESS(status)) {
+        if (OperationInformation->Object == clientProcess) {
+            // Block modification if it's not a kernel handle
+            if (!OperationInformation->KernelHandle) {
+                if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE) {
+                    OperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME);
+                } else if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) {
+                    OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME);
+                }
+            }
+        }
+        ObDereferenceObject(clientProcess);
     }
 
     return OB_PREOP_SUCCESS;

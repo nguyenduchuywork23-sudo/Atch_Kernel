@@ -46,9 +46,15 @@ void EvtFileClose(
     KeAcquireSpinLock(&g_ListenRequestLock, &oldIrql);
     if (g_PendingListenRequest != NULL) {
         WDFREQUEST req = g_PendingListenRequest;
-        g_PendingListenRequest = NULL;
-        KeReleaseSpinLock(&g_ListenRequestLock, oldIrql);
-        WdfRequestComplete(req, STATUS_CANCELLED);
+        NTSTATUS unmarkStatus = WdfRequestUnmarkCancelable(req);
+        if (NT_SUCCESS(unmarkStatus)) {
+            g_PendingListenRequest = NULL;
+            KeReleaseSpinLock(&g_ListenRequestLock, oldIrql);
+            WdfRequestComplete(req, STATUS_CANCELLED);
+        } else {
+            g_PendingListenRequest = NULL;
+            KeReleaseSpinLock(&g_ListenRequestLock, oldIrql);
+        }
     } else {
         KeReleaseSpinLock(&g_ListenRequestLock, oldIrql);
     }
@@ -112,24 +118,28 @@ void EvtIoDeviceControl(
             if (g_PendingListenRequest != NULL) {
                 // Đã có 1 request đang chờ, hủy request cũ
                 WDFREQUEST oldReq = g_PendingListenRequest;
+                NTSTATUS unmarkStatus = WdfRequestUnmarkCancelable(oldReq);
                 g_PendingListenRequest = Request;
                 KeReleaseSpinLock(&g_ListenRequestLock, oldIrql);
                 
-                WdfRequestComplete(oldReq, STATUS_CANCELLED);
+                if (NT_SUCCESS(unmarkStatus)) {
+                    WdfRequestComplete(oldReq, STATUS_CANCELLED);
+                }
             } else {
                 g_PendingListenRequest = Request;
-                // Đánh dấu Request là cancelable
-                WdfRequestMarkCancelableEx(Request, [](WDFREQUEST Req) {
-                    KIRQL irql;
-                    KeAcquireSpinLock(&g_ListenRequestLock, &irql);
-                    if (g_PendingListenRequest == Req) {
-                        g_PendingListenRequest = NULL;
-                    }
-                    KeReleaseSpinLock(&g_ListenRequestLock, irql);
-                    WdfRequestComplete(Req, STATUS_CANCELLED);
-                });
                 KeReleaseSpinLock(&g_ListenRequestLock, oldIrql);
             }
+            
+            // Đánh dấu Request mới là cancelable
+            WdfRequestMarkCancelableEx(Request, [](WDFREQUEST Req) {
+                KIRQL irql;
+                KeAcquireSpinLock(&g_ListenRequestLock, &irql);
+                if (g_PendingListenRequest == Req) {
+                    g_PendingListenRequest = NULL;
+                }
+                KeReleaseSpinLock(&g_ListenRequestLock, irql);
+                WdfRequestComplete(Req, STATUS_CANCELLED);
+            });
             
             // Không complete request này ngay
             return; 
@@ -144,7 +154,7 @@ void EvtIoDeviceControl(
 }
 
 // Hàm đẩy thông báo về Ring 3
-void NotifyViolationToRing3(ULONG ProcessId, const WCHAR* ImagePath, ULONG ViolationType)
+void NotifyViolationToRing3(ULONG ProcessId, PCUNICODE_STRING ImagePath, ULONG ViolationType)
 {
     KIRQL oldIrql;
     WDFREQUEST req = NULL;
@@ -170,11 +180,11 @@ void NotifyViolationToRing3(ULONG ProcessId, const WCHAR* ImagePath, ULONG Viola
             pLogEntry->ConfiscatedProcessId = ProcessId;
             pLogEntry->ViolationType = ViolationType;
             
-            if (ImagePath != NULL) {
-                size_t len = wcslen(ImagePath);
-                if (len > 255) len = 255;
-                wcsncpy(pLogEntry->ImagePath, ImagePath, len);
-                pLogEntry->ImagePath[len] = L'\0';
+            if (ImagePath != NULL && ImagePath->Buffer != NULL) {
+                size_t lenChars = ImagePath->Length / sizeof(WCHAR);
+                if (lenChars > 255) lenChars = 255;
+                wcsncpy(pLogEntry->ImagePath, ImagePath->Buffer, lenChars);
+                pLogEntry->ImagePath[lenChars] = L'\0';
             } else {
                 pLogEntry->ImagePath[0] = L'\0';
             }
@@ -184,4 +194,9 @@ void NotifyViolationToRing3(ULONG ProcessId, const WCHAR* ImagePath, ULONG Viola
             WdfRequestComplete(req, status);
         }
     }
+}
+
+ULONG GetExamClientProcessId()
+{
+    return g_ClientProcessId;
 }
