@@ -2,6 +2,8 @@
 #include "../inc/Callbacks.h"
 #include "../inc/IoctlHandler.h"
 
+#include "../inc/CompileTimeHash.h"
+
 void LoadImageNotifyRoutine(
     PUNICODE_STRING FullImageName,
     HANDLE ProcessId,
@@ -10,90 +12,60 @@ void LoadImageNotifyRoutine(
 {
     UNREFERENCED_PARAMETER(ImageInfo);
 
-    if (FullImageName != NULL)
+    if (FullImageName != NULL && FullImageName->Buffer != NULL && FullImageName->Length > 0)
     {
-        KdPrint(("[Atch_Kernel] Image Loaded: %wZ\n", FullImageName));
-
         ULONG examClientPid = GetExamClientProcessId();
 
-        // Check if DLL is injected into the client process
+        // 1. DLL Injection Protection
         if (examClientPid != 0 && ProcessId == (HANDLE)(ULONG_PTR)examClientPid)
         {
-            if (FullImageName->Buffer != NULL)
-            {
-                UNICODE_STRING extUs;
-                RtlInitUnicodeString(&extUs, L".dll");
-                
-                BOOLEAN isDll = FALSE;
-                if (FullImageName->Length >= extUs.Length) {
-                    UNICODE_STRING suffix;
-                    suffix.Length = extUs.Length;
-                    suffix.MaximumLength = extUs.Length;
-                    suffix.Buffer = (PWCH)((PUCHAR)FullImageName->Buffer + FullImageName->Length - extUs.Length);
-                    if (RtlCompareUnicodeString(&suffix, &extUs, TRUE) == 0) {
-                        isDll = TRUE;
+            BOOLEAN isSafePath = FALSE;
+            
+            UNICODE_STRING sys32;
+            RtlInitUnicodeString(&sys32, L"\\windows\\system32\\");
+            UNICODE_STRING syswow;
+            RtlInitUnicodeString(&syswow, L"\\windows\\syswow64\\");
+
+            USHORT wcharsCount = FullImageName->Length / sizeof(WCHAR);
+            if (wcharsCount >= 18) {
+                for (USHORT i = 0; i <= wcharsCount - 18; i++) {
+                    UNICODE_STRING subStr;
+                    subStr.Buffer = &FullImageName->Buffer[i];
+                    subStr.Length = 18 * sizeof(WCHAR);
+                    subStr.MaximumLength = subStr.Length;
+                    
+                    if (RtlCompareUnicodeString(&subStr, &sys32, TRUE) == 0 ||
+                        RtlCompareUnicodeString(&subStr, &syswow, TRUE) == 0) {
+                        isSafePath = TRUE;
+                        break;
                     }
                 }
+            }
 
-                if (isDll) {
-                    BOOLEAN inWindows = FALSE;
-                    USHORT wcharsCount = FullImageName->Length / sizeof(WCHAR);
-                    if (wcharsCount >= 9) {
-                        for (USHORT i = 0; i <= wcharsCount - 9; i++) {
-                            if (_wcsnicmp(&FullImageName->Buffer[i], L"\\windows\\", 9) == 0) {
-                                inWindows = TRUE;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!inWindows) {
-                        KdPrint(("[Atch_Kernel] Suspicious DLL Injection Detected: %wZ\n", FullImageName));
-                        UNICODE_STRING msg;
-                        RtlInitUnicodeString(&msg, L"Suspicious DLL Injection Blocked");
-                        NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &msg, 5); // 5 could be DLL_INJECTION
-
-                        ForceKillExamProcess((HANDLE)(ULONG_PTR)examClientPid);
-                    }
-                }
+            if (!isSafePath) {
+                KdPrint(("[Atch_Kernel] Suspicious DLL Injection Detected: %wZ\n", FullImageName));
+                LockExam();
+                UNICODE_STRING msg;
+                RtlInitUnicodeString(&msg, L"Suspicious DLL Injection");
+                NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &msg, 5); // 5: DLL_INJECTION
             }
         }
         else if (ProcessId == 0) // Driver loading
         {
-            if (FullImageName->Buffer != NULL)
+            // Zero-Trust: If the exam is running, NO new drivers should be loaded!
+            if (examClientPid != 0 && !IsExamLocked())
             {
-                USHORT lastSlashPos = 0;
-                for (USHORT i = 0; i < FullImageName->Length / sizeof(WCHAR); i++) {
-                    if (FullImageName->Buffer[i] == L'\\') {
-                        lastSlashPos = i + 1;
-                    }
-                }
-                
-                UNICODE_STRING fileName;
-                fileName.Buffer = &FullImageName->Buffer[lastSlashPos];
-                fileName.Length = FullImageName->Length - (lastSlashPos * sizeof(WCHAR));
-                fileName.MaximumLength = fileName.Length;
-
-                UNICODE_STRING gdrvName, iqvwName;
-                RtlInitUnicodeString(&gdrvName, L"gdrv.sys");
-                RtlInitUnicodeString(&iqvwName, L"iqvw64e.sys");
-
-                if (RtlCompareUnicodeString(&fileName, &gdrvName, TRUE) == 0 ||
-                    RtlCompareUnicodeString(&fileName, &iqvwName, TRUE) == 0)
-                {
-                    KdPrint(("[Atch_Kernel] BYOVD Detected: %wZ\n", FullImageName));
-                    UNICODE_STRING msg;
-                    RtlInitUnicodeString(&msg, L"Vulnerable Driver (BYOVD) Blocked");
-                    NotifyViolationToRing3(0, &msg, 4); // 4 could be BYOVD_DETECTED
-                    
-                    if (examClientPid != 0) {
-                        ForceKillExamProcess((HANDLE)(ULONG_PTR)examClientPid);
-                    }
-                }
+                KdPrint(("[Atch_Kernel] Zero-Trust BYOVD Block: Driver loaded during exam: %wZ\n", FullImageName));
+                LockExam();
+                UNICODE_STRING msg;
+                RtlInitUnicodeString(&msg, L"Driver loaded during exam");
+                NotifyViolationToRing3(0, &msg, 4); // 4: BYOVD_DETECTED
             }
         }
     }
 }
+
+BOOLEAN g_LoadImageNotifyRegistered = FALSE;
 
 NTSTATUS InitLoadImageNotify(PDRIVER_OBJECT DriverObject)
 {
@@ -102,6 +74,7 @@ NTSTATUS InitLoadImageNotify(PDRIVER_OBJECT DriverObject)
     NTSTATUS status = PsSetLoadImageNotifyRoutine(LoadImageNotifyRoutine);
     if (NT_SUCCESS(status))
     {
+        g_LoadImageNotifyRegistered = TRUE;
         KdPrint(("[Atch_Kernel] LoadImageNotify registered successfully.\n"));
     }
     else
@@ -114,13 +87,16 @@ NTSTATUS InitLoadImageNotify(PDRIVER_OBJECT DriverObject)
 
 void UnloadImageNotify()
 {
-    NTSTATUS status = PsRemoveLoadImageNotifyRoutine(LoadImageNotifyRoutine);
-    if (NT_SUCCESS(status))
-    {
-        KdPrint(("[Atch_Kernel] LoadImageNotify unregistered successfully.\n"));
-    }
-    else
-    {
-        KdPrint(("[Atch_Kernel] Failed to unregister LoadImageNotify. Status: 0x%X\n", status));
+    if (g_LoadImageNotifyRegistered) {
+        NTSTATUS status = PsRemoveLoadImageNotifyRoutine(LoadImageNotifyRoutine);
+        if (NT_SUCCESS(status))
+        {
+            g_LoadImageNotifyRegistered = FALSE;
+            KdPrint(("[Atch_Kernel] LoadImageNotify unregistered successfully.\n"));
+        }
+        else
+        {
+            KdPrint(("[Atch_Kernel] Failed to unregister LoadImageNotify. Status: 0x%X\n", status));
+        }
     }
 }

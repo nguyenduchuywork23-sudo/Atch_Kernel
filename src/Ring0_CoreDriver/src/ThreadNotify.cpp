@@ -21,20 +21,7 @@ VOID ThreadNotifyCallback(
             // Dual-Layer Defense against Thread Injection
             if (examClientPid != 0 && (ULONG)(ULONG_PTR)ProcessId == examClientPid)
             {
-                // Kill the thread
-                HANDLE threadHandle = NULL;
-                OBJECT_ATTRIBUTES objAttr;
-                CLIENT_ID clientId;
-
-                InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-                clientId.UniqueProcess = ProcessId;
-                clientId.UniqueThread = ThreadId;
-
-                NTSTATUS status = ZwOpenThread(&threadHandle, GENERIC_ALL, &objAttr, &clientId);
-                if (status == STATUS_SUCCESS && threadHandle != NULL) {
-                    ZwTerminateThread(threadHandle, STATUS_ACCESS_DENIED);
-                    ZwClose(threadHandle);
-                }
+                ForceKillExamThread(ProcessId, ThreadId);
 
                 UNICODE_STRING msg;
                 RtlInitUnicodeString(&msg, L"Remote Thread Injection Blocked");

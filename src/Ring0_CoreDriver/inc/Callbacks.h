@@ -12,4 +12,5 @@ extern "C" {
     NTSTATUS ZwTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus);
 
     void ForceKillExamProcess(HANDLE ProcessId);
+    void ForceKillExamThread(HANDLE ProcessId, HANDLE ThreadId);
 }

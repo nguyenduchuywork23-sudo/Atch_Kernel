@@ -16,5 +16,8 @@ extern "C" {
     void NotifyViolationToRing3(ULONG ProcessId, PCUNICODE_STRING ImagePath, ULONG ViolationType);
 
     ULONG GetExamClientProcessId();
-    BOOLEAN IsProcessBlacklisted(PCUNICODE_STRING ProcessName);
+
+    void LockExam();
+    void UnlockExam();
+    BOOLEAN IsExamLocked();
 }

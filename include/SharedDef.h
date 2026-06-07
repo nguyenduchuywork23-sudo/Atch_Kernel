@@ -27,6 +27,10 @@
 #define IOCTL_AK_UPDATE_BLACKLIST \
     CTL_CODE(ATCH_KERNEL_DEVICE_TYPE, 0x905, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
+// [BỔ SUNG V1.3.0] IOCTL phục vụ mở khóa ngoại vi khi bị Input Locking
+#define IOCTL_AK_UNLOCK_EXAM \
+    CTL_CODE(ATCH_KERNEL_DEVICE_TYPE, 0x906, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
 
 // Cấu trúc gói tin dữ liệu truyền tải giữa Ring 3 và Ring 0
 #pragma pack(push, 8)

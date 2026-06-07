@@ -8,6 +8,6 @@ extern "C" {
 
     // Đồng bộ hóa với Fast Mutex
     void InitializeSafeMutex(PFAST_MUTEX Mutex);
-    void AcquireSafeMutex(PFAST_MUTEX Mutex);
+    BOOLEAN AcquireSafeMutex(PFAST_MUTEX Mutex);
     void ReleaseSafeMutex(PFAST_MUTEX Mutex);
 }

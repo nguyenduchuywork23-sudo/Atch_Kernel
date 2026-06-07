@@ -29,18 +29,21 @@ void InitializeSafeMutex(PFAST_MUTEX Mutex)
     }
 }
 
-void AcquireSafeMutex(PFAST_MUTEX Mutex)
+BOOLEAN AcquireSafeMutex(PFAST_MUTEX Mutex)
 {
     if (Mutex != NULL) {
         // Fast Mutex chỉ an toàn ở IRQL <= APC_LEVEL
         KIRQL currentIrql = KeGetCurrentIrql();
         if (currentIrql <= APC_LEVEL) {
             ExAcquireFastMutex(Mutex);
+            return TRUE;
         } else {
             // Không được phép acquire Fast Mutex ở DISPATCH_LEVEL hoặc cao hơn
             KdPrint(("AtchKernel: [ERROR] AcquireSafeMutex ở IRQL %u (>= DISPATCH_LEVEL).\n", currentIrql));
+            return FALSE;
         }
     }
+    return FALSE;
 }
 
 void ReleaseSafeMutex(PFAST_MUTEX Mutex)
