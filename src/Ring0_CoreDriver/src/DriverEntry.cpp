@@ -8,6 +8,7 @@
 #include "../inc/HWID.h"
 #include "../inc/LoadImageNotify.h"
 #include "../inc/ThreadNotify.h"
+#include "../inc/InputBlocker.h"
 
 // Khai báo tên thiết bị và DOS device name
 DECLARE_CONST_UNICODE_STRING(ntDeviceName, L"\\Device\\AtchKernel");
@@ -45,7 +46,7 @@ extern "C" NTSTATUS DriverEntry(
     }
 
     // Khởi tạo Device
-    PWDFDEVICE_INIT pDeviceInit = WdfControlDeviceInitAllocate(driver, &SDDL_DEVOBJ_SYS_ALL_ADM_RWX_WORLD_RW_RES_R);
+    PWDFDEVICE_INIT pDeviceInit = WdfControlDeviceInitAllocate(driver, &SDDL_DEVOBJ_SYS_ALL_ADM_RWX);
     if (pDeviceInit == NULL) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         KdPrint(("AtchKernel: WdfControlDeviceInitAllocate thất bại.\n"));
@@ -73,9 +74,11 @@ extern "C" NTSTATUS DriverEntry(
     // Tạo Control Device
     WDFDEVICE controlDevice;
     status = WdfDeviceCreate(&pDeviceInit, WDF_NO_OBJECT_ATTRIBUTES, &controlDevice);
+    // WdfDeviceCreate frees pDeviceInit on both success and failure.
+    // Set to NULL to prevent double-free or use-after-free.
+    pDeviceInit = NULL;
     if (!NT_SUCCESS(status)) {
         KdPrint(("AtchKernel: WdfDeviceCreate thất bại - Lỗi 0x%X\n", status));
-        WdfDeviceInitFree(pDeviceInit);
         return status;
     }
 
@@ -86,14 +89,21 @@ extern "C" NTSTATUS DriverEntry(
         return status;
     }
 
-    // Khởi tạo hàng đợi xử lý IOCTL (Queue)
     status = InitializeIoctlQueue(controlDevice);
     if (!NT_SUCCESS(status)) {
         KdPrint(("AtchKernel: InitializeIoctlQueue thất bại - Lỗi 0x%X\n", status));
         return status;
     }
 
+    SetDeviceObjectForCallbacks(WdfDeviceWdmGetDeviceObject(controlDevice));
+
     WdfControlFinishInitializing(controlDevice);
+
+    // Khởi tạo Input Blocker (filter devices cho keyboard/mouse)
+    status = InitializeInputBlocker();
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("AtchKernel: InitializeInputBlocker thất bại - Lỗi 0x%X\n", status));
+    }
 
     // Đăng ký các Callback bảo vệ (Process, Registry, Ob)
     status = RegisterSecurityCallbacks(DriverObject);
@@ -136,7 +146,12 @@ extern "C" void EvtDriverUnload(_In_ WDFDRIVER Driver)
     UNREFERENCED_PARAMETER(Driver);
     KdPrint(("AtchKernel: EvtDriverUnload - Hủy đăng ký callbacks.\n"));
     
+    StopHeartbeatThread();
+
+    UninitializeInputBlocker();
+
     UnloadThreadNotify();
     UnloadImageNotify();
     UnregisterSecurityCallbacks();
+    DrainWorkItems();
 }

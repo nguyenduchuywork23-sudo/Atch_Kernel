@@ -13,4 +13,8 @@ extern "C" {
 
     void ForceKillExamProcess(HANDLE ProcessId);
     void ForceKillExamThread(HANDLE ProcessId, HANDLE ThreadId);
+
+    void SetDeviceObjectForCallbacks(PDEVICE_OBJECT DeviceObject);
+
+    void DrainWorkItems();
 }

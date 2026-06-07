@@ -5,12 +5,8 @@
 
 PVOID SafeAllocatePool(size_t NumberOfBytes)
 {
-    // Sử dụng NonPagedPoolNx để ngăn ngừa lỗi bảo mật liên quan đến thực thi vùng nhớ dữ liệu
-    PVOID pMemory = ExAllocatePoolWithTag(NonPagedPoolNx, NumberOfBytes, ATCHK_POOL_TAG);
-    
-    if (pMemory != NULL) {
-        RtlZeroMemory(pMemory, NumberOfBytes);
-    }
+    // ExAllocatePool2 với POOL_FLAG_NON_PAGED mặc định là NX và zero-initialized
+    PVOID pMemory = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumberOfBytes, ATCHK_POOL_TAG);
     
     return pMemory;
 }

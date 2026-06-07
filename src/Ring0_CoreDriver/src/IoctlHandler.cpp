@@ -6,20 +6,27 @@ static WDFREQUEST g_PendingListenRequest = NULL;
 static KSPIN_LOCK g_ListenRequestLock;
 static volatile ULONG g_ClientProcessId = 0;
 
-static volatile BOOLEAN g_IsExamLocked = FALSE;
+static volatile LONG g_IsExamLocked = 0;
 static LARGE_INTEGER g_LastHeartbeatTime = {0};
-static volatile BOOLEAN g_HeartbeatThreadRunning = FALSE;
-static HANDLE g_HeartbeatThreadHandle = NULL;
+static volatile LONG g_HeartbeatThreadRunning = 0;
+static PKTHREAD g_HeartbeatThreadObject = NULL;
+static KEVENT g_HeartbeatEvent;
 
 void LockExam() {
-    g_IsExamLocked = TRUE;
+    InterlockedExchange(&g_IsExamLocked, 1);
 }
 void UnlockExam() {
-    g_IsExamLocked = FALSE;
-    KeQuerySystemTime(&g_LastHeartbeatTime);
+    InterlockedExchange(&g_IsExamLocked, 0);
+    LARGE_INTEGER currentTime;
+    KeQuerySystemTime(&currentTime);
+    LONGLONG expected, newTime;
+    do {
+        expected = g_LastHeartbeatTime.QuadPart;
+        newTime = currentTime.QuadPart;
+    } while (InterlockedCompareExchange64(&g_LastHeartbeatTime.QuadPart, newTime, expected) != expected);
 }
 BOOLEAN IsExamLocked() {
-    return g_IsExamLocked;
+    return (InterlockedOr((LONG volatile*)&g_IsExamLocked, 0) != 0);
 }
 
 VOID HeartbeatThreadRoutine(PVOID Context)
@@ -28,31 +35,49 @@ VOID HeartbeatThreadRoutine(PVOID Context)
     LARGE_INTEGER delay;
     delay.QuadPart = -10000000LL; // 1 second
 
-    while (g_HeartbeatThreadRunning)
+    while (InterlockedOr((LONG volatile*)&g_HeartbeatThreadRunning, 0) != 0)
     {
-        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        NTSTATUS waitStatus = KeWaitForSingleObject(&g_HeartbeatEvent, Executive, KernelMode, FALSE, &delay);
+        if (waitStatus == STATUS_SUCCESS) {
+            break;
+        }
         
-        if (g_ClientProcessId == 0) continue;
+        if (InterlockedOr((LONG volatile*)&g_HeartbeatThreadRunning, 0) == 0) break;
+
+        ULONG clientPid = (ULONG)InterlockedOr((LONG volatile*)&g_ClientProcessId, 0);
+        if (clientPid == 0) continue;
 
         LARGE_INTEGER currentTime;
         KeQuerySystemTime(&currentTime);
 
-        if (g_LastHeartbeatTime.QuadPart != 0)
+        LONGLONG lastTime = InterlockedCompareExchange64(&g_LastHeartbeatTime.QuadPart, 0, 0);
+
+        if (lastTime != 0)
         {
             // If > 5 seconds (50,000,000 100-nanoseconds)
-            if (currentTime.QuadPart - g_LastHeartbeatTime.QuadPart > 50000000LL)
+            if (currentTime.QuadPart - lastTime > 50000000LL)
             {
-                if (!g_IsExamLocked) {
+                if (InterlockedOr((LONG volatile*)&g_IsExamLocked, 0) == 0) {
                     KdPrint(("AtchKernel: Heartbeat timeout! Locking exam.\n"));
                     LockExam();
                     UNICODE_STRING msg;
                     RtlInitUnicodeString(&msg, L"Heartbeat Timeout");
-                    NotifyViolationToRing3(0, &msg, 7); // 7: HEARTBEAT_TIMEOUT
+                    NotifyViolationToRing3(0, &msg, VIOLATION_HEARTBEAT_TIMEOUT);
                 }
             }
         }
     }
     PsTerminateSystemThread(STATUS_SUCCESS);
+}
+
+void StopHeartbeatThread() {
+    InterlockedExchange((LONG volatile*)&g_HeartbeatThreadRunning, 0);
+    KeSetEvent(&g_HeartbeatEvent, 0, FALSE);
+    PVOID threadObj = InterlockedExchangePointer((PVOID volatile*)&g_HeartbeatThreadObject, NULL);
+    if (threadObj != NULL) {
+        KeWaitForSingleObject(threadObj, Executive, KernelMode, FALSE, NULL);
+        ObDereferenceObject(threadObj);
+    }
 }
 
 NTSTATUS InitializeIoctlQueue(WDFDEVICE Device)
@@ -62,6 +87,7 @@ NTSTATUS InitializeIoctlQueue(WDFDEVICE Device)
     WDFQUEUE queue;
 
     KeInitializeSpinLock(&g_ListenRequestLock);
+    KeInitializeEvent(&g_HeartbeatEvent, NotificationEvent, FALSE);
 
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
     queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
@@ -129,14 +155,30 @@ void EvtIoDeviceControl(
             status = WdfRequestRetrieveInputBuffer(Request, sizeof(EXAM_INIT_DATA), (PVOID*)&pData, NULL);
             if (NT_SUCCESS(status)) {
                 InterlockedExchange((LONG volatile*)&g_ClientProcessId, pData->ClientProcessId);
-                KeQuerySystemTime(&g_LastHeartbeatTime);
-                g_IsExamLocked = FALSE;
+                LARGE_INTEGER currentTime;
+                KeQuerySystemTime(&currentTime);
+                LONGLONG expected, newTime;
+                do {
+                    expected = g_LastHeartbeatTime.QuadPart;
+                    newTime = currentTime.QuadPart;
+                } while (InterlockedCompareExchange64(&g_LastHeartbeatTime.QuadPart, newTime, expected) != expected);
                 
-                if (!g_HeartbeatThreadRunning) {
-                    g_HeartbeatThreadRunning = TRUE;
+                InterlockedExchange((LONG volatile*)&g_IsExamLocked, 0);
+                
+                if (InterlockedCompareExchange(&g_HeartbeatThreadRunning, 1, 0) == 0) {
+                    KeClearEvent(&g_HeartbeatEvent);
+                    HANDLE hThread = NULL;
                     OBJECT_ATTRIBUTES objAttr;
                     InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-                    PsCreateSystemThread(&g_HeartbeatThreadHandle, THREAD_ALL_ACCESS, &objAttr, NULL, NULL, HeartbeatThreadRoutine, NULL);
+                    NTSTATUS threadStatus = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, &objAttr, NULL, NULL, HeartbeatThreadRoutine, NULL);
+                    if (NT_SUCCESS(threadStatus)) {
+                        PKTHREAD localThreadObj = NULL;
+                        ObReferenceObjectByHandle(hThread, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID*)&localThreadObj, NULL);
+                        InterlockedExchangePointer((PVOID volatile*)&g_HeartbeatThreadObject, localThreadObj);
+                        ZwClose(hThread);
+                    } else {
+                        InterlockedExchange(&g_HeartbeatThreadRunning, 0);
+                    }
                 }
                 KdPrint(("AtchKernel: Initialize Exam for PID %lu\n", pData->ClientProcessId));
             }
@@ -147,18 +189,20 @@ void EvtIoDeviceControl(
         {
             KdPrint(("AtchKernel: Terminate Exam.\n"));
             InterlockedExchange((LONG volatile*)&g_ClientProcessId, 0);
-            g_HeartbeatThreadRunning = FALSE;
-            if (g_HeartbeatThreadHandle != NULL) {
-                ZwClose(g_HeartbeatThreadHandle);
-                g_HeartbeatThreadHandle = NULL;
-            }
+            StopHeartbeatThread();
             status = STATUS_SUCCESS;
             break;
         }
 
         case IOCTL_AK_SEND_HEARTBEAT:
         {
-            KeQuerySystemTime(&g_LastHeartbeatTime);
+            LARGE_INTEGER currentTime;
+            KeQuerySystemTime(&currentTime);
+            LONGLONG expected, newTime;
+            do {
+                expected = g_LastHeartbeatTime.QuadPart;
+                newTime = currentTime.QuadPart;
+            } while (InterlockedCompareExchange64(&g_LastHeartbeatTime.QuadPart, newTime, expected) != expected);
             status = STATUS_SUCCESS;
             break;
         }
@@ -214,6 +258,20 @@ void EvtIoDeviceControl(
             
             // Không complete request này ngay
             return;
+        }
+
+        case IOCTL_AK_ADD_WHITELIST_PID:
+        {
+            KdPrint(("AtchKernel: IOCTL_AK_ADD_WHITELIST_PID - Not yet implemented.\n"));
+            status = STATUS_NOT_IMPLEMENTED;
+            break;
+        }
+
+        case IOCTL_AK_UPDATE_BLACKLIST:
+        {
+            KdPrint(("AtchKernel: IOCTL_AK_UPDATE_BLACKLIST - Not yet implemented.\n"));
+            status = STATUS_NOT_IMPLEMENTED;
+            break;
         }
 
         default:

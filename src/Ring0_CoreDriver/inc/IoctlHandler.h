@@ -1,6 +1,7 @@
 #pragma once
 #include <ntddk.h>
 #include <wdf.h>
+#include "../../include/SharedDef.h"
 
 extern "C" {
     NTSTATUS InitializeIoctlQueue(WDFDEVICE Device);
@@ -20,4 +21,6 @@ extern "C" {
     void LockExam();
     void UnlockExam();
     BOOLEAN IsExamLocked();
+
+    void StopHeartbeatThread();
 }

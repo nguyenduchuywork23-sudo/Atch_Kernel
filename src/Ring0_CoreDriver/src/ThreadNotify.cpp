@@ -3,7 +3,7 @@
 #include "../inc/IoctlHandler.h"
 
 // Callback function for thread creation/deletion
-VOID ThreadNotifyCallback(
+static VOID ThreadNotifyCallback(
     _In_ HANDLE ProcessId,
     _In_ HANDLE ThreadId,
     _In_ BOOLEAN Create
@@ -18,14 +18,24 @@ VOID ThreadNotifyCallback(
         {
             KdPrint(("Atch_Kernel: ThreadNotify - Remote thread created. ProcessId: %p, ThreadId: %p\n", ProcessId, ThreadId));
 
-            // Dual-Layer Defense against Thread Injection
-            if (examClientPid != 0 && (ULONG)(ULONG_PTR)ProcessId == examClientPid)
+            // Skip if the creator is a Session 0 process (system services like csrss, smss, etc.)
+            PEPROCESS currentProcess = IoGetCurrentProcess();
+            ULONG creatorSessionId = 0;
+            // PsGetProcessSessionId returns the session ID directly (ULONG)
+            creatorSessionId = PsGetProcessSessionId(currentProcess);
+
+            if (creatorSessionId == 0) {
+                KdPrint(("Atch_Kernel: ThreadNotify - Skipping Session 0 system process thread creation.\n"));
+            }
+            // Dual-Layer Defense against Thread Injection (only for user-session processes)
+            else if (examClientPid != 0 && (ULONG)(ULONG_PTR)ProcessId == examClientPid)
             {
                 ForceKillExamThread(ProcessId, ThreadId);
+                LockExam();
 
                 UNICODE_STRING msg;
                 RtlInitUnicodeString(&msg, L"Remote Thread Injection Blocked");
-                NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &msg, 3); // 3 could be THREAD_INJECTION
+                NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &msg, VIOLATION_THREAD_INJECTION);
             }
         }
         else

@@ -9,7 +9,7 @@ NTSTATUS GenerateHWID(PUNICODE_STRING HwidOut) {
     // For now, we provide a mock implementation as requested.
     UNICODE_STRING dummyHwid = RTL_CONSTANT_STRING(L"HWID-1234-ABCD-MOCK");
 
-    HwidOut->Buffer = (PWCH)ExAllocatePoolWithTag(NonPagedPool, dummyHwid.MaximumLength, 'diWH');
+    HwidOut->Buffer = (PWCH)ExAllocatePool2(POOL_FLAG_NON_PAGED, dummyHwid.MaximumLength, 'diWH');
     if (!HwidOut->Buffer) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }

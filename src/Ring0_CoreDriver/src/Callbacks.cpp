@@ -7,8 +7,13 @@ extern "C" PCHAR PsGetProcessImageFileName(PEPROCESS Process);
 // Biến lưu cookie đăng ký
 static LARGE_INTEGER g_RegistryCookie = { 0 };
 static PVOID g_ObRegistrationHandle = NULL;
-static BOOLEAN g_ProcessCallbackRegistered = FALSE;
-static BOOLEAN g_ThreadCallbackRegistered = FALSE;
+static volatile LONG g_ProcessCallbackRegistered = 0;
+static PDEVICE_OBJECT g_DeviceObjectForWorkItems = NULL;
+volatile LONG g_OutstandingWorkItems = 0;
+
+void SetDeviceObjectForCallbacks(PDEVICE_OBJECT DeviceObject) {
+    InterlockedExchangePointer((PVOID volatile*)&g_DeviceObjectForWorkItems, DeviceObject);
+}
 
 // 1. Process Callback
 void ProcessNotifyCallbackEx(
@@ -45,7 +50,7 @@ void ProcessNotifyCallbackEx(
                     hash == CompileTimeHashW(L"x64dbg.exe")) {
                     
                     CreateInfo->CreationStatus = STATUS_ACCESS_DENIED;
-                    NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, imageName, 2); // 2: PROCESS_BLACKLISTED
+                    NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, imageName, VIOLATION_PROCESS_BLACKLISTED);
                     LockExam();
                 }
             }
@@ -74,26 +79,17 @@ NTSTATUS RegistryCallback(
                 RtlInitUnicodeString(&targetName, L"Debugger");
 
                 BOOLEAN match = FALSE;
-                __try {
-                    // preSetInfo->ValueName and its Buffer may point to user-mode memory
-                    ProbeForRead((PVOID)valueName, sizeof(UNICODE_STRING), 1);
-                    if (valueName->Buffer != NULL && valueName->Length > 0) {
-                        ProbeForRead((PVOID)valueName->Buffer, valueName->Length, 1);
-                        
-                        ULONG hash = RuntimeHashUnicodeString(valueName);
-                        if (hash == CompileTimeHashW(L"debugger")) {
-                            match = TRUE;
-                        }
+                if (valueName->Buffer != NULL && valueName->Length > 0 && valueName->Length <= 1024) { // Add reasonable length check
+                    ULONG hash = RuntimeHashUnicodeString(valueName);
+                    if (hash == CompileTimeHashW(L"debugger")) {
+                        match = TRUE;
                     }
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
-                    // Invalid pointer exception caught
-                    KdPrint(("AtchKernel: Exception reading registry valueName.\n"));
                 }
 
                 if (match) {
                     UNICODE_STRING regPath;
                     RtlInitUnicodeString(&regPath, L"Registry\\IFEO");
-                    NotifyViolationToRing3(0, &regPath, 1); // 1 could be REGISTRY_TAMPERING
+                    NotifyViolationToRing3(0, &regPath, VIOLATION_REGISTRY_TAMPERING);
                     return STATUS_ACCESS_DENIED;
                 }
             }
@@ -134,9 +130,12 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
             BOOLEAN isSystemProcess = FALSE;
             
             if (processName) {
-                // simple case-insensitive check for csrss/lsass
+                // simple case-insensitive check for csrss/lsass with spoofing resistance
                 if (_stricmp(processName, "csrss.exe") == 0 || _stricmp(processName, "lsass.exe") == 0) {
-                    isSystemProcess = TRUE;
+                    // Spoofing Resistance: Only trust if it's actually a protected process or system session (0)
+                    if (PsIsProtectedProcess(currentProcess) || PsGetProcessSessionId(currentProcess) == 0) {
+                        isSystemProcess = TRUE;
+                    }
                 }
             }
 
@@ -155,35 +154,16 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
     return OB_PREOP_SUCCESS;
 }
 
-// 4. Thread Callback (Anti-Remote Thread Injection)
-void ThreadNotifyCallback(HANDLE ProcessId, HANDLE ThreadId, BOOLEAN Create)
-{
-    UNREFERENCED_PARAMETER(ThreadId);
-
-    if (Create) {
-        ULONG clientPid = GetExamClientProcessId();
-        if (clientPid != 0 && ProcessId == (HANDLE)(ULONG_PTR)clientPid) {
-            // Check if the thread is created by a different process
-            HANDLE currentPid = PsGetCurrentProcessId();
-            if (currentPid != (HANDLE)(ULONG_PTR)clientPid) {
-                KdPrint(("AtchKernel: Remote thread injection blocked! Target: %lu, Creator: %lu\n", clientPid, (ULONG)(ULONG_PTR)currentPid));
-                LockExam();
-                UNICODE_STRING msg;
-                RtlInitUnicodeString(&msg, L"Remote Thread Injection Blocked");
-                NotifyViolationToRing3((ULONG)(ULONG_PTR)currentPid, &msg, 8); // 8: REMOTE_THREAD
-            }
-        }
-    }
-}
-
 typedef struct _TERMINATION_WORK_ITEM_CONTEXT {
-    WORK_QUEUE_ITEM WorkItem;
+    PIO_WORKITEM WorkItem;
     HANDLE ProcessId;
     HANDLE ThreadId;
 } TERMINATION_WORK_ITEM_CONTEXT, *PTERMINATION_WORK_ITEM_CONTEXT;
 
-VOID TerminationWorkerRoutine(PVOID Context)
+IO_WORKITEM_ROUTINE TerminationWorkerRoutine;
+VOID TerminationWorkerRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context)
 {
+    UNREFERENCED_PARAMETER(DeviceObject);
     PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)Context;
     
     if (pContext->ThreadId != NULL) {
@@ -209,45 +189,65 @@ VOID TerminationWorkerRoutine(PVOID Context)
             ZwClose(processHandle);
         }
     }
+    
+    InterlockedDecrement(&g_OutstandingWorkItems);
+
+    if (pContext->WorkItem != NULL) {
+        IoFreeWorkItem(pContext->WorkItem);
+    }
     ExFreePoolWithTag(pContext, 'mrTW');
 }
 
 void ForceKillExamProcess(HANDLE ProcessId)
 {
-    PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)ExAllocatePoolWithTag(NonPagedPool, sizeof(TERMINATION_WORK_ITEM_CONTEXT), 'mrTW');
+    if (g_DeviceObjectForWorkItems == NULL) return;
+
+    PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(TERMINATION_WORK_ITEM_CONTEXT), 'mrTW');
     if (pContext != NULL) {
         pContext->ProcessId = ProcessId;
         pContext->ThreadId = NULL;
-        ExInitializeWorkItem(&pContext->WorkItem, TerminationWorkerRoutine, pContext);
-        ExQueueWorkItem(&pContext->WorkItem, DelayedWorkQueue);
+        pContext->WorkItem = IoAllocateWorkItem(g_DeviceObjectForWorkItems);
+        if (pContext->WorkItem != NULL) {
+            InterlockedIncrement(&g_OutstandingWorkItems);
+            IoQueueWorkItem(pContext->WorkItem, TerminationWorkerRoutine, DelayedWorkQueue, pContext);
+        } else {
+            ExFreePoolWithTag(pContext, 'mrTW');
+        }
     }
 }
 
 void ForceKillExamThread(HANDLE ProcessId, HANDLE ThreadId)
 {
-    PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)ExAllocatePoolWithTag(NonPagedPool, sizeof(TERMINATION_WORK_ITEM_CONTEXT), 'mrTW');
+    if (g_DeviceObjectForWorkItems == NULL) return;
+
+    PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(TERMINATION_WORK_ITEM_CONTEXT), 'mrTW');
     if (pContext != NULL) {
         pContext->ProcessId = ProcessId;
         pContext->ThreadId = ThreadId;
-        ExInitializeWorkItem(&pContext->WorkItem, TerminationWorkerRoutine, pContext);
-        ExQueueWorkItem(&pContext->WorkItem, DelayedWorkQueue);
+        pContext->WorkItem = IoAllocateWorkItem(g_DeviceObjectForWorkItems);
+        if (pContext->WorkItem != NULL) {
+            InterlockedIncrement(&g_OutstandingWorkItems);
+            IoQueueWorkItem(pContext->WorkItem, TerminationWorkerRoutine, DelayedWorkQueue, pContext);
+        } else {
+            ExFreePoolWithTag(pContext, 'mrTW');
+        }
     }
 }
 
 NTSTATUS RegisterSecurityCallbacks(PDRIVER_OBJECT DriverObject)
 {
     NTSTATUS status;
+    NTSTATUS firstFailure = STATUS_SUCCESS;
 
     // Đăng ký Process Callback
     status = PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallbackEx, FALSE);
     if (NT_SUCCESS(status)) {
-        g_ProcessCallbackRegistered = TRUE;
-    }
-
-    // Đăng ký Thread Callback
-    status = PsSetCreateThreadNotifyRoutine(ThreadNotifyCallback);
-    if (NT_SUCCESS(status)) {
-        g_ThreadCallbackRegistered = TRUE;
+        InterlockedExchange(&g_ProcessCallbackRegistered, 1);
+    } else {
+        KdPrint(("AtchKernel: Đăng ký Process Callback thất bại. Status: 0x%X\n", status));
+        if (NT_SUCCESS(firstFailure)) {
+            firstFailure = status;
+        }
     }
 
     // Đăng ký Registry Callback
@@ -255,7 +255,10 @@ NTSTATUS RegisterSecurityCallbacks(PDRIVER_OBJECT DriverObject)
     RtlInitUnicodeString(&altitude, L"360000"); // Độ cao (Altitude) đăng ký
     status = CmRegisterCallbackEx(RegistryCallback, &altitude, DriverObject, NULL, &g_RegistryCookie, NULL);
     if (!NT_SUCCESS(status)) {
-        KdPrint(("AtchKernel: Đăng ký Registry Callback thất bại.\n"));
+        KdPrint(("AtchKernel: Đăng ký Registry Callback thất bại. Status: 0x%X\n", status));
+        if (NT_SUCCESS(firstFailure)) {
+            firstFailure = status;
+        }
     }
 
     // Đăng ký ObCallback
@@ -275,22 +278,20 @@ NTSTATUS RegisterSecurityCallbacks(PDRIVER_OBJECT DriverObject)
 
     status = ObRegisterCallbacks(&obReg, &g_ObRegistrationHandle);
     if (!NT_SUCCESS(status)) {
-        KdPrint(("AtchKernel: Đăng ký ObCallbacks thất bại.\n"));
+        KdPrint(("AtchKernel: Đăng ký ObCallbacks thất bại. Status: 0x%X\n", status));
+        if (NT_SUCCESS(firstFailure)) {
+            firstFailure = status;
+        }
     }
 
-    return STATUS_SUCCESS;
+    return firstFailure;
 }
 
 void UnregisterSecurityCallbacks()
 {
-    if (g_ProcessCallbackRegistered) {
+    if (InterlockedOr(&g_ProcessCallbackRegistered, 0) != 0) {
         PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallbackEx, TRUE);
-        g_ProcessCallbackRegistered = FALSE;
-    }
-
-    if (g_ThreadCallbackRegistered) {
-        PsRemoveCreateThreadNotifyRoutine(ThreadNotifyCallback);
-        g_ThreadCallbackRegistered = FALSE;
+        InterlockedExchange(&g_ProcessCallbackRegistered, 0);
     }
 
     if (g_RegistryCookie.QuadPart != 0) {
@@ -301,5 +302,27 @@ void UnregisterSecurityCallbacks()
     if (g_ObRegistrationHandle != NULL) {
         ObUnRegisterCallbacks(g_ObRegistrationHandle);
         g_ObRegistrationHandle = NULL;
+    }
+}
+
+void DrainWorkItems()
+{
+    // Wait for all outstanding work items to complete (max 5 seconds)
+    const LONG maxIterations = 50; // 50 * 100ms = 5 seconds
+    LARGE_INTEGER delay;
+    delay.QuadPart = -1000000LL; // 100ms in 100-nanosecond intervals
+
+    for (LONG i = 0; i < maxIterations; i++) {
+        if (InterlockedOr(&g_OutstandingWorkItems, 0) == 0) {
+            break;
+        }
+        KdPrint(("AtchKernel: DrainWorkItems - Waiting for %ld outstanding work items...\n",
+                 InterlockedOr(&g_OutstandingWorkItems, 0)));
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+    }
+
+    if (InterlockedOr(&g_OutstandingWorkItems, 0) != 0) {
+        KdPrint(("AtchKernel: DrainWorkItems - WARNING: %ld work items still outstanding after timeout!\n",
+                 InterlockedOr(&g_OutstandingWorkItems, 0)));
     }
 }

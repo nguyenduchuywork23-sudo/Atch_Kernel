@@ -8,7 +8,7 @@ BOOLEAN DetectHypervisor() {
     
     // 1. CPUID Leaf 1 (Basic check)
     __cpuid(cpuInfo, 1);
-    if ((cpuInfo[2] & (1 << 31)) != 0) {
+    if ((cpuInfo[2] & (1u << 31)) != 0) {
         KdPrint(("AtchKernel: Hypervisor bit set in CPUID leaf 1.\n"));
         LockExam();
         return TRUE;
@@ -22,9 +22,12 @@ BOOLEAN DetectHypervisor() {
     *(int*)(&sig[4]) = cpuInfo[2];
     *(int*)(&sig[8]) = cpuInfo[3];
     
-    // Note: Use RtlCompareMemory or simple strstr to find known VM signatures
-    // For military grade, we shouldn't rely on string matching alone, but it's a good secondary check
-    if (strstr(sig, "VMware") || strstr(sig, "KVM") || strstr(sig, "Microsoft Hv") || strstr(sig, "XenVMM") || strstr(sig, "prl hyperv")) {
+    // Use RtlCompareMemory for kernel-mode safe string matching against known VM signatures
+    if (RtlCompareMemory(sig, "VMwareVMware", 12) == 12 ||
+        RtlCompareMemory(sig, "KVMKVMKVM\0\0\0", 12) == 12 ||
+        RtlCompareMemory(sig, "Microsoft Hv", 12) == 12 ||
+        RtlCompareMemory(sig, "XenVMMXenVMM", 12) == 12 ||
+        RtlCompareMemory(sig, "prl hyperv ", 12) == 12) {
         KdPrint(("AtchKernel: Hypervisor signature detected: %s\n", sig));
         LockExam();
         return TRUE;
@@ -35,14 +38,16 @@ BOOLEAN DetectHypervisor() {
     ULONG detectedCount = 0;
     for (int i = 0; i < 10; ++i) {
         ULONG64 tsc1, tsc2;
+        unsigned int aux;
         
         // Disable interrupts to get an accurate reading (Requires IRQL = HIGH_LEVEL or just use KeRaiseIrql)
         KIRQL oldIrql;
-        KeRaiseIrql(HIGH_LEVEL, &oldIrql);
+        KeRaiseIrql(DISPATCH_LEVEL, &oldIrql);
         
-        tsc1 = __rdtsc();
+        __cpuid(cpuInfo, 0); // Serialize instruction pipeline
+        tsc1 = __rdtscp(&aux);
         __cpuid(cpuInfo, 0); // Forces VM-Exit
-        tsc2 = __rdtsc();
+        tsc2 = __rdtscp(&aux);
         
         KeLowerIrql(oldIrql);
 

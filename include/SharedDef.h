@@ -40,10 +40,21 @@ typedef struct _EXAM_INIT_DATA {
     WCHAR SessionToken[64];     // Chuỗi khóa bảo mật chống tấn công Replay
 } EXAM_INIT_DATA, *PEXAM_INIT_DATA;
 
+// Phân loại vi phạm (Violation Type Enum)
+enum ViolationType {
+    VIOLATION_REGISTRY_TAMPERING = 1,
+    VIOLATION_PROCESS_BLACKLISTED = 2,
+    VIOLATION_THREAD_INJECTION = 3,
+    VIOLATION_BYOVD_DETECTED = 4,
+    VIOLATION_DLL_INJECTION = 5,
+    VIOLATION_DKOM_HIDDEN = 6,
+    VIOLATION_HEARTBEAT_TIMEOUT = 7
+};
+
 typedef struct _MONITOR_LOG_ENTRY {
     ULONG ConfiscatedProcessId; // PID của tiến trình gian lận bị phát hiện và chặn
     WCHAR ImagePath[256];       // Đường dẫn tệp tin thực thi vi phạm nội quy thi
-    ULONG ViolationType;        // Phân loại lỗi (1: Chặn Registry, 2: Chặn Process, 3: DKOM)
+    ULONG ViolationType;        // Xem enum ViolationType ở trên
 } MONITOR_LOG_ENTRY, *PMONITOR_LOG_ENTRY;
 
 typedef struct _BLACKLIST_DATA {
