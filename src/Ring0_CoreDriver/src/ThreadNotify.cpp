@@ -13,41 +13,40 @@ static VOID ThreadNotifyCallback(
     {
         ULONG examClientPid = GetExamClientProcessId();
 
-        // Basic heuristic for remote threads: thread created in a different process context
+        // Detect remote threads: thread created in a different process context
         if (ProcessId != PsGetCurrentProcessId())
         {
-            KdPrint(("Atch_Kernel: ThreadNotify - Remote thread created. ProcessId: %p, ThreadId: %p\n", ProcessId, ThreadId));
-
-            // Skip if the creator is a Session 0 process (system services like csrss, smss, etc.)
-            PEPROCESS currentProcess = IoGetCurrentProcess();
-            ULONG creatorSessionId = 0;
-            // PsGetProcessSessionId returns the session ID directly (ULONG)
-            creatorSessionId = PsGetProcessSessionId(currentProcess);
-
-            if (creatorSessionId == 0) {
-                KdPrint(("Atch_Kernel: ThreadNotify - Skipping Session 0 system process thread creation.\n"));
-            }
-            // Dual-Layer Defense against Thread Injection (only for user-session processes)
-            else if (examClientPid != 0 && (ULONG)(ULONG_PTR)ProcessId == examClientPid)
+            // If the target is the exam process, block ALL remote thread creation
+            // regardless of session (closes Confused Deputy via Session 0 processes)
+            if (examClientPid != 0 && (ULONG)(ULONG_PTR)ProcessId == examClientPid)
             {
-                ForceKillExamThread(ProcessId, ThreadId);
+                AtchPrint(("Atch_Kernel: ThreadNotify - BLOCKED remote thread into exam process! Creator PID: %p, ThreadId: %p\n",
+                    PsGetCurrentProcessId(), ThreadId));
+                
+                ForceKillExamThread(PsGetCurrentProcessId(), ThreadId);
                 LockExam();
 
                 UNICODE_STRING msg;
                 RtlInitUnicodeString(&msg, L"Remote Thread Injection Blocked");
-                NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &msg, VIOLATION_THREAD_INJECTION);
+                NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, &msg, ViolationType::VIOLATION_THREAD_INJECTION);
+            }
+            else
+            {
+                AtchPrint(("Atch_Kernel: ThreadNotify - Remote thread created. ProcessId: %p, ThreadId: %p\n", ProcessId, ThreadId));
             }
         }
         else
         {
-            KdPrint(("Atch_Kernel: ThreadNotify - Local thread created. ProcessId: %p, ThreadId: %p\n", ProcessId, ThreadId));
+            AtchPrint(("Atch_Kernel: ThreadNotify - Local thread created. ProcessId: %p, ThreadId: %p\n", ProcessId, ThreadId));
         }
     }
     else
     {
-        KdPrint(("Atch_Kernel: ThreadNotify - Thread deleted. ProcessId: %p, ThreadId: %p\n", ProcessId, ThreadId));
+        AtchPrint(("Atch_Kernel: ThreadNotify - Thread deleted. ProcessId: %p, ThreadId: %p\n", ProcessId, ThreadId));
     }
 }
+
+static volatile LONG g_ThreadNotifyRegistered = 0;
 
 NTSTATUS InitThreadNotify()
 {
@@ -57,11 +56,12 @@ NTSTATUS InitThreadNotify()
     status = PsSetCreateThreadNotifyRoutine(ThreadNotifyCallback);
     if (NT_SUCCESS(status))
     {
-        KdPrint(("Atch_Kernel: ThreadNotify successfully initialized.\n"));
+        InterlockedExchange(&g_ThreadNotifyRegistered, 1);
+        AtchPrint(("Atch_Kernel: ThreadNotify successfully initialized.\n"));
     }
     else
     {
-        KdPrint(("Atch_Kernel: Failed to initialize ThreadNotify (Status: 0x%X)\n", status));
+        AtchPrint(("Atch_Kernel: Failed to initialize ThreadNotify (Status: 0x%X)\n", status));
     }
 
     return status;
@@ -69,16 +69,23 @@ NTSTATUS InitThreadNotify()
 
 void UnloadThreadNotify()
 {
+    // Guard: only unregister if we successfully registered
+    if (InterlockedOr(&g_ThreadNotifyRegistered, 0) == 0) {
+        return;
+    }
+
     NTSTATUS status;
 
     // Unregister the thread notify callback
     status = PsRemoveCreateThreadNotifyRoutine(ThreadNotifyCallback);
     if (NT_SUCCESS(status))
     {
-        KdPrint(("Atch_Kernel: ThreadNotify successfully unloaded.\n"));
+        InterlockedExchange(&g_ThreadNotifyRegistered, 0);
+        AtchPrint(("Atch_Kernel: ThreadNotify successfully unloaded.\n"));
     }
     else
     {
-        KdPrint(("Atch_Kernel: Failed to unload ThreadNotify (Status: 0x%X)\n", status));
+        AtchPrint(("Atch_Kernel: Failed to unload ThreadNotify (Status: 0x%X)\n", status));
     }
+
 }

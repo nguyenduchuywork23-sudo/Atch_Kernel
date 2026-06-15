@@ -1,4 +1,5 @@
 #include "../inc/MemorySync.h"
+#include "../../include/SharedDef.h"
 
 // Sử dụng tag riêng để dễ theo dõi Memory Leak trong WinDbg (Pool Tagging)
 #define ATCHK_POOL_TAG 'igiV' 
@@ -35,7 +36,7 @@ BOOLEAN AcquireSafeMutex(PFAST_MUTEX Mutex)
             return TRUE;
         } else {
             // Không được phép acquire Fast Mutex ở DISPATCH_LEVEL hoặc cao hơn
-            KdPrint(("AtchKernel: [ERROR] AcquireSafeMutex ở IRQL %u (>= DISPATCH_LEVEL).\n", currentIrql));
+            AtchPrint(("AtchKernel: [ERROR] AcquireSafeMutex ở IRQL %u (>= DISPATCH_LEVEL).\n", currentIrql));
             return FALSE;
         }
     }

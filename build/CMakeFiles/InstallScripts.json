@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/cmake_install.cmake",
+		"C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/tests/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

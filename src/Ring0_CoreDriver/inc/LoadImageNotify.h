@@ -1,7 +1,7 @@
 #ifndef LOAD_IMAGE_NOTIFY_H
 #define LOAD_IMAGE_NOTIFY_H
 
-#include <ntddk.h>
+#include <ntifs.h>
 
 #ifdef __cplusplus
 extern "C" {

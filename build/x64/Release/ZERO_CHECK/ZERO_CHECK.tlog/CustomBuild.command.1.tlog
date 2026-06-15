@@ -1,0 +1,10 @@
+^C:\USERS\NGUYE\ONEDRIVE\DESKTOP\ATCH_KERNEL\BUILD\CMAKEFILES\56EA206DB824774A506E9439E0869CF0\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/Nguye/OneDrive/Desktop/Atch_Kernel -BC:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/Atch_Kernel.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

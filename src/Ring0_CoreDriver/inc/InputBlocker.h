@@ -1,7 +1,11 @@
 #pragma once
-#include <ntddk.h>
+#include <ntifs.h>
 
+#ifdef __cplusplus
 extern "C" {
+#endif
     NTSTATUS InitializeInputBlocker();
     void UninitializeInputBlocker();
+#ifdef __cplusplus
 }
+#endif

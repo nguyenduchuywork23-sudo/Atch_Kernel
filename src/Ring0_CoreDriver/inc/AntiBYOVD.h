@@ -1,7 +1,7 @@
 #ifndef ANTIBYOVD_H
 #define ANTIBYOVD_H
 
-#include <ntddk.h>
+#include <ntifs.h>
 
 #ifdef __cplusplus
 extern "C" {

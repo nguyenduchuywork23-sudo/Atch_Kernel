@@ -1,0 +1,13 @@
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\AntiBYOVD.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\AntiBYOVD.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\AntiDKOM.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\AntiDKOM.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\AntiVM.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\AntiVM.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\Callbacks.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\Callbacks.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\DriverEntry.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\DriverEntry.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\HWID.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\HWID.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\HypervisorCore.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\HypervisorCore.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\InputBlocker.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\InputBlocker.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\IoctlHandler.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\IoctlHandler.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\LoadImageNotify.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\LoadImageNotify.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\MemoryScanner.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\MemoryScanner.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\MemorySync.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\MemorySync.obj
+C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\ThreadNotify.cpp;C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\build\Ring0_CoreDriver.dir\Release\ThreadNotify.obj

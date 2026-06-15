@@ -1,0 +1,7 @@
+C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/CMakeFiles/Ring0_CoreDriver.dir
+C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/CMakeFiles/RUN_TESTS.dir
+C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/CMakeFiles/ZERO_CHECK.dir
+C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/tests/CMakeFiles/basic_test.dir
+C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/tests/CMakeFiles/RUN_TESTS.dir
+C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/tests/CMakeFiles/ALL_BUILD.dir

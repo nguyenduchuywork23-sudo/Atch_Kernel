@@ -1,7 +1,7 @@
 #ifndef HWID_H
 #define HWID_H
 
-#include <ntddk.h>
+#include <ntifs.h>
 
 #ifdef __cplusplus
 extern "C" {

@@ -11,11 +11,11 @@ BOOLEAN IsVulnerableDriverLoaded(PUNICODE_STRING DriverName) {
         return FALSE;
     }
 
-    // Extract filename from full path
+    // Extract filename from full path, supporting both backslash and forward slash
     USHORT lastSlashPos = 0;
     USHORT wcharsCount = DriverName->Length / sizeof(WCHAR);
     for (USHORT i = 0; i < wcharsCount; i++) {
-        if (DriverName->Buffer[i] == L'\\') {
+        if (DriverName->Buffer[i] == L'\\' || DriverName->Buffer[i] == L'/') {
             lastSlashPos = i + 1;
         }
     }
@@ -23,6 +23,12 @@ BOOLEAN IsVulnerableDriverLoaded(PUNICODE_STRING DriverName) {
     UNICODE_STRING fileName;
     fileName.Buffer = &DriverName->Buffer[lastSlashPos];
     fileName.Length = DriverName->Length - (lastSlashPos * sizeof(WCHAR));
+    
+    // Remove trailing null terminator if present to prevent hash mismatch
+    if (fileName.Length >= sizeof(WCHAR) && fileName.Buffer[(fileName.Length / sizeof(WCHAR)) - 1] == L'\0') {
+        fileName.Length -= sizeof(WCHAR);
+    }
+
     fileName.MaximumLength = fileName.Length;
 
     ULONG hash = RuntimeHashUnicodeString(&fileName);
@@ -33,8 +39,7 @@ BOOLEAN IsVulnerableDriverLoaded(PUNICODE_STRING DriverName) {
         hash == CompileTimeHashW(L"iqvw64e.sys") ||
         hash == CompileTimeHashW(L"capcom.sys")) {
         
-        KdPrint(("AtchKernel: BYOVD detected via hash!\n"));
-        LockExam();
+        AtchPrint(("AtchKernel: BYOVD detected via hash!\n"));
         return TRUE;
     }
 

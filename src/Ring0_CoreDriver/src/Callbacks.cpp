@@ -2,7 +2,28 @@
 #include "../inc/IoctlHandler.h"
 #include "../inc/CompileTimeHash.h"
 
+// Process/Thread access rights not defined in km headers (from winnt.h)
+#ifndef PROCESS_TERMINATE
+#define PROCESS_TERMINATE           (0x0001)
+#define PROCESS_CREATE_THREAD       (0x0002)
+#define PROCESS_SET_SESSIONID       (0x0004)
+#define PROCESS_VM_OPERATION        (0x0008)
+#define PROCESS_VM_READ             (0x0010)
+#define PROCESS_VM_WRITE            (0x0020)
+#define PROCESS_CREATE_PROCESS      (0x0080)
+#define PROCESS_SET_INFORMATION     (0x0200)
+#define PROCESS_QUERY_INFORMATION   (0x0400)
+#define PROCESS_SUSPEND_RESUME      (0x0800)
+#endif
+#ifndef THREAD_SET_THREAD_TOKEN
+#define THREAD_SET_THREAD_TOKEN     (0x0080)
+#define THREAD_IMPERSONATE          (0x0100)
+#define THREAD_DIRECT_IMPERSONATION (0x0200)
+#endif
+
 extern "C" PCHAR PsGetProcessImageFileName(PEPROCESS Process);
+extern "C" BOOLEAN PsIsProtectedProcessLight(PEPROCESS Process);
+extern "C" BOOLEAN PsIsProtectedProcess(PEPROCESS Process);
 
 // Biến lưu cookie đăng ký
 static LARGE_INTEGER g_RegistryCookie = { 0 };
@@ -10,9 +31,41 @@ static PVOID g_ObRegistrationHandle = NULL;
 static volatile LONG g_ProcessCallbackRegistered = 0;
 static PDEVICE_OBJECT g_DeviceObjectForWorkItems = NULL;
 volatile LONG g_OutstandingWorkItems = 0;
+KEVENT g_WorkItemDrainEvent;
+
+void ScheduleEmergencyCleanup(ULONG ProcessId);
+
+void InitCallbacks() {
+    KeInitializeEvent(&g_WorkItemDrainEvent, NotificationEvent, TRUE);
+}
 
 void SetDeviceObjectForCallbacks(PDEVICE_OBJECT DeviceObject) {
     InterlockedExchangePointer((PVOID volatile*)&g_DeviceObjectForWorkItems, DeviceObject);
+}
+
+BOOLEAN CheckSubstring(PCUNICODE_STRING Str, PCWSTR SubStr) {
+    if (Str == NULL || Str->Buffer == NULL || SubStr == NULL) return FALSE;
+    SIZE_T subLen = wcslen(SubStr);
+    BOOLEAN result = FALSE;
+    __try {
+        SIZE_T strLenChars = Str->Length / sizeof(WCHAR);
+        if (strLenChars >= subLen) {
+            for (SIZE_T i = 0; i <= strLenChars - subLen; i++) {
+                BOOLEAN match = TRUE;
+                for (SIZE_T j = 0; j < subLen; j++) {
+                    WCHAR c1 = Str->Buffer[i + j];
+                    WCHAR c2 = SubStr[j];
+                    if (c1 >= L'A' && c1 <= L'Z') c1 += (L'a' - L'A');
+                    if (c2 >= L'A' && c2 <= L'Z') c2 += (L'a' - L'A');
+                    if (c1 != c2) { match = FALSE; break; }
+                }
+                if (match) { result = TRUE; break; }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result = FALSE;
+    }
+    return result;
 }
 
 // 1. Process Callback
@@ -29,31 +82,51 @@ void ProcessNotifyCallbackEx(
             PCUNICODE_STRING imageName = CreateInfo->ImageFileName;
             
             if (imageName->Buffer != NULL && imageName->Length > 0) {
-                USHORT lastSlashPos = 0;
-                for (USHORT i = 0; i < imageName->Length / sizeof(WCHAR); i++) {
-                    if (imageName->Buffer[i] == L'\\') {
-                        lastSlashPos = i + 1;
+                BOOLEAN isBlacklisted = FALSE;
+                __try {
+                    USHORT lastSlashPos = 0;
+                    for (USHORT i = 0; i < imageName->Length / sizeof(WCHAR); i++) {
+                        if (imageName->Buffer[i] == L'\\' || imageName->Buffer[i] == L'/') {
+                            lastSlashPos = i + 1;
+                        }
                     }
-                }
-                
-                UNICODE_STRING fileName;
-                fileName.Buffer = &imageName->Buffer[lastSlashPos];
-                fileName.Length = imageName->Length - (lastSlashPos * sizeof(WCHAR));
-                fileName.MaximumLength = fileName.Length;
-
-                ULONG hash = RuntimeHashUnicodeString(&fileName);
-
-                // Check FNV-1a hashes of blacklisted tools
-                if (hash == CompileTimeHashW(L"cheatengine-x86_64.exe") ||
-                    hash == CompileTimeHashW(L"processhacker.exe") ||
-                    hash == CompileTimeHashW(L"ida64.exe") ||
-                    hash == CompileTimeHashW(L"x64dbg.exe")) {
                     
+                    UNICODE_STRING fileName;
+                    fileName.Buffer = imageName->Buffer + lastSlashPos;
+                    fileName.Length = imageName->Length - (lastSlashPos * sizeof(WCHAR));
+                    if (fileName.Length >= sizeof(WCHAR) && fileName.Buffer[(fileName.Length / sizeof(WCHAR)) - 1] == L'\0') {
+                        fileName.Length -= sizeof(WCHAR);
+                    }
+                    
+                    ULONG hash = RuntimeHashUnicodeString(&fileName);
+                    if (hash == CompileTimeHashW(L"cheatengine-x86_64.exe") ||
+                        hash == CompileTimeHashW(L"processhacker.exe") ||
+                        hash == CompileTimeHashW(L"ida64.exe") ||
+                        hash == CompileTimeHashW(L"x64dbg.exe") ||
+                        IsHashBlacklisted(hash)) {
+                        isBlacklisted = TRUE;
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    isBlacklisted = FALSE;
+                }
+
+                if (isBlacklisted) {
                     CreateInfo->CreationStatus = STATUS_ACCESS_DENIED;
-                    NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, imageName, VIOLATION_PROCESS_BLACKLISTED);
+                    NotifyViolationToRing3((ULONG)(ULONG_PTR)ProcessId, imageName, ViolationType::VIOLATION_PROCESS_BLACKLISTED);
                     LockExam();
                 }
             }
+        }
+    } else {
+        // Process termination — detect exam client crash and fully clean up
+        ULONG pid = (ULONG)(ULONG_PTR)ProcessId;
+        ULONG examPid = GetExamClientProcessId();
+        if (pid != 0 && pid == examPid) {
+            AtchPrint(("AtchKernel: CRITICAL — Exam client PID %lu terminated unexpectedly!\n", pid));
+            LockExam();
+            NotifyViolationToRing3(pid, NULL, ViolationType::VIOLATION_HEARTBEAT_TIMEOUT);
+            // Full cleanup: clear PID, stop heartbeat thread, prevent zombie state
+            EmergencyCleanupExam(pid);
         }
     }
 }
@@ -68,30 +141,150 @@ NTSTATUS RegistryCallback(
     UNREFERENCED_PARAMETER(CallbackContext);
     REG_NOTIFY_CLASS notifyClass = (REG_NOTIFY_CLASS)(ULONG_PTR)Argument1;
 
-    // Chặn chỉnh sửa khóa Image File Execution Options (IFEO)
-    if (notifyClass == RegNtPreSetValueKey) {
-        PREG_PRE_SET_VALUE_KEY_INFORMATION preSetInfo = (PREG_PRE_SET_VALUE_KEY_INFORMATION)Argument2;
-        if (preSetInfo != NULL && preSetInfo->Object != NULL) {
-            PCUNICODE_STRING valueName = preSetInfo->ValueName;
-            
-            if (valueName != NULL) {
-                UNICODE_STRING targetName;
-                RtlInitUnicodeString(&targetName, L"Debugger");
+    // Chặn chỉnh sửa khóa Image File Execution Options (IFEO) và khóa Service
+    if (notifyClass == RegNtPreSetValueKey || notifyClass == RegNtPreDeleteKey || notifyClass == RegNtPreDeleteValueKey || notifyClass == RegNtPreRenameKey || notifyClass == RegNtPreCreateKeyEx || notifyClass == RegNtPreCreateKey || notifyClass == RegNtPreRestoreKey || notifyClass == RegNtPreReplaceKey || notifyClass == RegNtPreLoadKey || notifyClass == RegNtPreSetKeySecurity) {
+        PVOID keyObject = NULL;
+        PCUNICODE_STRING newName = NULL;
+        PCUNICODE_STRING completeName = NULL; // For absolute path check
 
-                BOOLEAN match = FALSE;
-                if (valueName->Buffer != NULL && valueName->Length > 0 && valueName->Length <= 1024) { // Add reasonable length check
-                    ULONG hash = RuntimeHashUnicodeString(valueName);
-                    if (hash == CompileTimeHashW(L"debugger")) {
-                        match = TRUE;
+        if (notifyClass == RegNtPreSetValueKey) {
+            PREG_SET_VALUE_KEY_INFORMATION info = (PREG_SET_VALUE_KEY_INFORMATION)Argument2;
+            if (info) keyObject = info->Object;
+        } else if (notifyClass == RegNtPreDeleteValueKey) {
+            PREG_DELETE_VALUE_KEY_INFORMATION info = (PREG_DELETE_VALUE_KEY_INFORMATION)Argument2;
+            if (info) keyObject = info->Object;
+        } else if (notifyClass == RegNtPreDeleteKey) {
+            PREG_DELETE_KEY_INFORMATION info = (PREG_DELETE_KEY_INFORMATION)Argument2;
+            if (info) keyObject = info->Object;
+        } else if (notifyClass == RegNtPreRenameKey) {
+            PREG_RENAME_KEY_INFORMATION info = (PREG_RENAME_KEY_INFORMATION)Argument2;
+            if (info) { keyObject = info->Object; newName = info->NewName; }
+        } else if (notifyClass == RegNtPreCreateKeyEx) {
+            PREG_CREATE_KEY_INFORMATION info = (PREG_CREATE_KEY_INFORMATION)Argument2;
+            if (info) {
+                keyObject = info->RootObject;
+                completeName = info->CompleteName;
+                // When RootObject is not NULL, CompleteName is a relative path
+                if (keyObject != NULL) {
+                    newName = info->CompleteName;
+                }
+            }
+        } else if (notifyClass == RegNtPreCreateKey) {
+            PREG_PRE_CREATE_KEY_INFORMATION info = (PREG_PRE_CREATE_KEY_INFORMATION)Argument2;
+            if (info) completeName = info->CompleteName;
+        } else if (notifyClass == RegNtPreRestoreKey) {
+            PREG_RESTORE_KEY_INFORMATION info = (PREG_RESTORE_KEY_INFORMATION)Argument2;
+            if (info) keyObject = info->Object;
+        } else if (notifyClass == RegNtPreReplaceKey) {
+            PREG_REPLACE_KEY_INFORMATION info = (PREG_REPLACE_KEY_INFORMATION)Argument2;
+            if (info) keyObject = info->Object;
+        } else if (notifyClass == RegNtPreLoadKey) {
+            PREG_LOAD_KEY_INFORMATION info = (PREG_LOAD_KEY_INFORMATION)Argument2;
+            if (info) keyObject = info->Object;
+        } else if (notifyClass == RegNtPreSetKeySecurity) {
+            PREG_SET_KEY_SECURITY_INFORMATION info = (PREG_SET_KEY_SECURITY_INFORMATION)Argument2;
+            if (info) keyObject = info->Object;
+        }
+
+        // OMEGA-V-BOOT-02: Always protect our OWN service key from deletion/rename/disable,
+        // even outside exam sessions. Only gate the aggressive per-process blocking on exam state.
+        ULONG regExamPid = GetExamClientProcessId();
+        BOOLEAN isExamActive = (regExamPid != 0);
+
+        // Self-protection: ALWAYS block attempts to delete/rename our service key
+        if (!isExamActive) {
+            // Outside exam: only block destructive ops on our own service key
+            if (notifyClass != RegNtPreDeleteKey &&
+                notifyClass != RegNtPreRenameKey &&
+                notifyClass != RegNtPreSetValueKey) {
+                return STATUS_SUCCESS;
+            }
+        }
+
+        // === Handle RegNtPreCreateKeyEx/CreateKey with absolute path (RootObject == NULL) ===
+        // When an absolute path is provided, RootObject is NULL and
+        // CompleteName contains the full path. We MUST check it directly.
+        if ((notifyClass == RegNtPreCreateKeyEx || notifyClass == RegNtPreCreateKey) && keyObject == NULL && completeName != NULL) {
+            if (CheckSubstring(completeName, L"\\Services\\AtchKernel") ||
+                CheckSubstring(completeName, L"Services\\AtchKernel") ||
+                CheckSubstring(completeName, L"..\\") ||
+                CheckSubstring(completeName, L"Image File Execution Options\\AtchKernel.exe") ||
+                CheckSubstring(completeName, L"SilentProcessExit\\AtchKernel.exe")) {
+                UNICODE_STRING regMsg;
+                RtlInitUnicodeString(&regMsg, L"Registry Tampering Detected (Absolute Path)");
+                NotifyViolationToRing3(0, &regMsg, ViolationType::VIOLATION_REGISTRY_TAMPERING);
+                return STATUS_ACCESS_DENIED;
+            }
+        }
+
+        if (keyObject != NULL) {
+            PCUNICODE_STRING keyName = NULL;
+            if (NT_SUCCESS(CmCallbackGetKeyObjectIDEx(&g_RegistryCookie, keyObject, NULL, &keyName, 0))) {
+                BOOLEAN block = FALSE;
+                if (keyName != NULL && keyName->Buffer != NULL) {
+                    if (CheckSubstring(keyName, L"\\Services\\AtchKernel") || 
+                        CheckSubstring(keyName, L"Services\\AtchKernel") || 
+                        CheckSubstring(keyName, L"..\\") || 
+                        CheckSubstring(keyName, L"Image File Execution Options\\AtchKernel.exe") ||
+                        CheckSubstring(keyName, L"SilentProcessExit\\AtchKernel.exe")) {
+                        block = TRUE;
+                    }
+                    
+                    if (!block && notifyClass == RegNtPreRenameKey) {
+                        // If someone renames "Image File Execution Options" itself, block it
+                        if (CheckSubstring(keyName, L"Image File Execution Options") ||
+                            CheckSubstring(keyName, L"SilentProcessExit") ||
+                            CheckSubstring(keyName, L"CurrentControlSet\\Services") ||
+                            CheckSubstring(keyName, L"ControlSet001\\Services") ||
+                            // OMEGA-II HIGH-12: Cover additional ControlSets and parent keys
+                            CheckSubstring(keyName, L"ControlSet002\\Services") ||
+                            CheckSubstring(keyName, L"ControlSet003\\Services")) {
+                            block = TRUE;
+                        }
+                    }
+                    
+                    // === FIX: Block Restoring/Replacing Parent Hives ===
+                    if (!block && (notifyClass == RegNtPreRestoreKey || notifyClass == RegNtPreReplaceKey || notifyClass == RegNtPreLoadKey)) {
+                        if (CheckSubstring(keyName, L"\\Services") || 
+                            CheckSubstring(keyName, L"Image File Execution Options") ||
+                            CheckSubstring(keyName, L"SilentProcessExit") ||
+                            CheckSubstring(keyName, L"CurrentControlSet") ||
+                            CheckSubstring(keyName, L"CurrentVersion") ||
+                            CheckSubstring(keyName, L"Control")) {
+                            block = TRUE;
+                        }
+                    }
+                
+                // Check relative paths: combine keyName + newName context
+                if (!block && newName != NULL && newName->Buffer != NULL) {
+                    if (CheckSubstring(newName, L"AtchKernel")) {
+                        if (keyName != NULL && keyName->Buffer != NULL) {
+                            if (CheckSubstring(keyName, L"\\Services") || 
+                                CheckSubstring(keyName, L"Image File Execution Options") ||
+                                CheckSubstring(keyName, L"SilentProcessExit")) {
+                                block = TRUE;
+                            }
+                        }
+                    }
+                    // Also check the full relative path for Service/IFEO patterns
+                    if (!block) {
+                        if (CheckSubstring(newName, L"\\Services\\AtchKernel") ||
+                            CheckSubstring(newName, L"Image File Execution Options\\AtchKernel.exe") ||
+                            CheckSubstring(newName, L"SilentProcessExit\\AtchKernel.exe")) {
+                            block = TRUE;
+                        }
                     }
                 }
-
-                if (match) {
-                    UNICODE_STRING regPath;
-                    RtlInitUnicodeString(&regPath, L"Registry\\IFEO");
-                    NotifyViolationToRing3(0, &regPath, VIOLATION_REGISTRY_TAMPERING);
-                    return STATUS_ACCESS_DENIED;
+                
+                if (block) {
+                    UNICODE_STRING regMsg;
+                    RtlInitUnicodeString(&regMsg, L"Registry Tampering Detected");
+                    NotifyViolationToRing3(0, &regMsg, ViolationType::VIOLATION_REGISTRY_TAMPERING);
                 }
+                } // Close: if (keyName != NULL && keyName->Buffer != NULL)
+                
+                CmCallbackReleaseKeyObjectIDEx(keyName);
+                if (block) return STATUS_ACCESS_DENIED;
             }
         }
     }
@@ -110,7 +303,7 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
         return OB_PREOP_SUCCESS;
     }
 
-    if (OperationInformation->ObjectType != *PsProcessType) {
+    if (OperationInformation->ObjectType != *PsProcessType && OperationInformation->ObjectType != *PsThreadType) {
         return OB_PREOP_SUCCESS;
     }
 
@@ -123,32 +316,96 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
     NTSTATUS status = PsLookupProcessByProcessId(UlongToHandle(clientPid), &clientProcess);
     
     if (NT_SUCCESS(status)) {
-        if (OperationInformation->Object == clientProcess) {
-            // Exclude system processes
+        BOOLEAN isTarget = FALSE;
+        if (OperationInformation->ObjectType == *PsProcessType) {
+            if (OperationInformation->Object == clientProcess) isTarget = TRUE;
+        } else if (OperationInformation->ObjectType == *PsThreadType) {
+            if (PsGetThreadProcess((PETHREAD)OperationInformation->Object) == clientProcess) {
+                isTarget = TRUE;
+            }
+            BOOLEAN isTargetHeartbeat = FALSE;
+            HANDLE heartbeatId = GetHeartbeatThreadId();
+            if (heartbeatId != NULL) {
+                HANDLE targetId = PsGetThreadId((PETHREAD)OperationInformation->Object);
+                if (targetId == heartbeatId) {
+                    isTargetHeartbeat = TRUE;
+                }
+            }
+            if (isTargetHeartbeat) isTarget = TRUE;
+        }
+
+        if (isTarget) {
+            // Identify the process requesting the handle
             PEPROCESS currentProcess = IoGetCurrentProcess();
             PCHAR processName = PsGetProcessImageFileName(currentProcess);
+            BOOLEAN isSelf = (currentProcess == clientProcess);
             BOOLEAN isSystemProcess = FALSE;
             
             if (processName) {
-                // simple case-insensitive check for csrss/lsass with spoofing resistance
-                if (_stricmp(processName, "csrss.exe") == 0 || _stricmp(processName, "lsass.exe") == 0) {
-                    // Spoofing Resistance: Only trust if it's actually a protected process or system session (0)
-                    if (PsIsProtectedProcess(currentProcess) || PsGetProcessSessionId(currentProcess) == 0) {
+                SIZE_T len = strlen(processName);
+                if ((len == 9 && _stricmp(processName, "csrss.exe") == 0) || 
+                    (len == 9 && _stricmp(processName, "lsass.exe") == 0)) {
+                    // Check both PP (legacy) and PPL (Windows 10+) to cover all OS versions
+                    if (PsIsProtectedProcess(currentProcess) || PsIsProtectedProcessLight(currentProcess)) {
                         isSystemProcess = TRUE;
                     }
                 }
             }
 
-            // Block modification if it's not a kernel handle and not a system process
-            if (!OperationInformation->KernelHandle && !isSystemProcess) {
-                if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE) {
-                    OperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME | PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION);
-                } else if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) {
-                    OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME | PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION);
+            // === HARDENED: System processes get LIMITED access to exam process ===
+            // Even csrss.exe/lsass.exe should NEVER write to or inject into the exam.
+            // They only need PROCESS_QUERY_INFORMATION + PROCESS_VM_READ for OS stability.
+            // This prevents Confused Deputy & PPL Spoofing attacks.
+            
+            // Check if target is heartbeat thread
+            PKTHREAD heartbeatThread = GetHeartbeatThreadObject();
+            BOOLEAN isTargetHeartbeat = (heartbeatThread != NULL && OperationInformation->ObjectType == *PsThreadType && OperationInformation->Object == heartbeatThread);
+            
+            BOOLEAN isWhitelisted = IsPidWhitelisted((ULONG)(ULONG_PTR)PsGetProcessId(currentProcess));
+
+            if (!OperationInformation->KernelHandle && (!isSelf || isTargetHeartbeat) && !isWhitelisted) {
+                if (isSystemProcess && !isTargetHeartbeat) {
+                    // System processes: strip dangerous write/injection rights, keep read
+                    ACCESS_MASK dangerousProcessRights = PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD | PROCESS_DUP_HANDLE | PROCESS_SET_INFORMATION | PROCESS_CREATE_PROCESS | PROCESS_SUSPEND_RESUME | WRITE_DAC | WRITE_OWNER;
+                    ACCESS_MASK dangerousThreadRights = THREAD_TERMINATE | THREAD_SET_CONTEXT | THREAD_SET_INFORMATION | THREAD_SET_THREAD_TOKEN | THREAD_IMPERSONATE | THREAD_DIRECT_IMPERSONATION | THREAD_SUSPEND_RESUME | WRITE_DAC | WRITE_OWNER | THREAD_SET_LIMITED_INFORMATION;
+                    
+                    if (OperationInformation->ObjectType == *PsProcessType) {
+                        if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE) {
+                            OperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~dangerousProcessRights;
+                        } else if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) {
+                            OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~dangerousProcessRights;
+                        }
+                    } else if (OperationInformation->ObjectType == *PsThreadType) {
+                        if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE) {
+                            OperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~dangerousThreadRights;
+                        } else if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) {
+                            OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~dangerousThreadRights;
+                        }
+                    }
+                } else {
+                    // Non-system, non-self processes: strip ALL dangerous rights (existing behavior)
+                    if (OperationInformation->ObjectType == *PsProcessType) {
+                        if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE) {
+                            OperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME | PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE | PROCESS_SET_INFORMATION | WRITE_DAC | PROCESS_CREATE_PROCESS | WRITE_OWNER);
+                        } else if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) {
+                            OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~(PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME | PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE | PROCESS_SET_INFORMATION | WRITE_DAC | PROCESS_CREATE_PROCESS | WRITE_OWNER);
+                        }
+                    } else if (OperationInformation->ObjectType == *PsThreadType) {
+                        if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE) {
+                            OperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~(THREAD_TERMINATE | THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SET_INFORMATION | THREAD_SET_THREAD_TOKEN | THREAD_IMPERSONATE | THREAD_DIRECT_IMPERSONATION | WRITE_DAC | WRITE_OWNER | THREAD_SET_LIMITED_INFORMATION);
+                        } else if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE) {
+                            OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~(THREAD_TERMINATE | THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SET_INFORMATION | THREAD_SET_THREAD_TOKEN | THREAD_IMPERSONATE | THREAD_DIRECT_IMPERSONATION | WRITE_DAC | WRITE_OWNER | THREAD_SET_LIMITED_INFORMATION);
+                        }
+                    }
                 }
             }
         }
         ObDereferenceObject(clientProcess);
+    } else if (status == STATUS_INVALID_PARAMETER && clientPid != 0) {
+        // Zombie state: Process is already dead but g_ClientProcessId is still set.
+        // ProcessNotifyCallbackEx might have missed it or a race condition occurred.
+        AtchPrint(("AtchKernel: CRITICAL — Zombie PID %lu detected in ObCallback. Scheduling cleanup.\n", clientPid));
+        ScheduleEmergencyCleanup(clientPid);
     }
 
     return OB_PREOP_SUCCESS;
@@ -167,15 +424,17 @@ VOID TerminationWorkerRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context)
     PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)Context;
     
     if (pContext->ThreadId != NULL) {
-        HANDLE threadHandle = NULL;
+        // Terminate the entire process owning the violating thread
+        // ZwTerminateThread is not exported from ntoskrnl.lib — use process termination
+        HANDLE processHandle = NULL;
         OBJECT_ATTRIBUTES objAttr;
         CLIENT_ID clientId;
         InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
         clientId.UniqueProcess = pContext->ProcessId;
-        clientId.UniqueThread = pContext->ThreadId;
-        if (NT_SUCCESS(ZwOpenThread(&threadHandle, GENERIC_ALL, &objAttr, &clientId)) && threadHandle != NULL) {
-            ZwTerminateThread(threadHandle, STATUS_ACCESS_DENIED);
-            ZwClose(threadHandle);
+        clientId.UniqueThread = NULL;
+        if (NT_SUCCESS(ZwOpenProcess(&processHandle, PROCESS_TERMINATE, &objAttr, &clientId)) && processHandle != NULL) {
+            ZwTerminateProcess(processHandle, STATUS_ACCESS_DENIED);
+            ZwClose(processHandle);
         }
     } else {
         HANDLE processHandle = NULL;
@@ -184,13 +443,15 @@ VOID TerminationWorkerRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context)
         InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
         clientId.UniqueProcess = pContext->ProcessId;
         clientId.UniqueThread = NULL;
-        if (NT_SUCCESS(ZwOpenProcess(&processHandle, GENERIC_ALL, &objAttr, &clientId)) && processHandle != NULL) {
+        if (NT_SUCCESS(ZwOpenProcess(&processHandle, PROCESS_TERMINATE, &objAttr, &clientId)) && processHandle != NULL) {
             ZwTerminateProcess(processHandle, STATUS_ACCESS_DENIED);
             ZwClose(processHandle);
         }
     }
     
-    InterlockedDecrement(&g_OutstandingWorkItems);
+    if (InterlockedDecrement(&g_OutstandingWorkItems) == 0) {
+        KeSetEvent(&g_WorkItemDrainEvent, 0, FALSE);
+    }
 
     if (pContext->WorkItem != NULL) {
         IoFreeWorkItem(pContext->WorkItem);
@@ -198,18 +459,78 @@ VOID TerminationWorkerRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context)
     ExFreePoolWithTag(pContext, 'mrTW');
 }
 
+typedef struct _CLEANUP_WORK_ITEM_CONTEXT {
+    PIO_WORKITEM WorkItem;
+    ULONG ProcessId;
+} CLEANUP_WORK_ITEM_CONTEXT, *PCLEANUP_WORK_ITEM_CONTEXT;
+
+IO_WORKITEM_ROUTINE CleanupWorkerRoutine;
+VOID CleanupWorkerRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context)
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    PCLEANUP_WORK_ITEM_CONTEXT pContext = (PCLEANUP_WORK_ITEM_CONTEXT)Context;
+    
+    AtchPrint(("AtchKernel: Executing EmergencyCleanupExam in Worker Thread for PID %lu\n", pContext->ProcessId));
+    EmergencyCleanupExam(pContext->ProcessId);
+    
+    if (pContext->WorkItem != NULL) {
+        IoFreeWorkItem(pContext->WorkItem);
+    }
+    ExFreePoolWithTag(pContext, 'mrCW');
+
+    if (InterlockedDecrement(&g_OutstandingWorkItems) == 0) {
+        KeSetEvent(&g_WorkItemDrainEvent, 0, FALSE);
+    }
+}
+
+void ScheduleEmergencyCleanup(ULONG ProcessId)
+{
+    // OMEGA-FINAL M03: Atomic read to prevent TOCTOU race during teardown
+    PDEVICE_OBJECT devObj = (PDEVICE_OBJECT)InterlockedCompareExchangePointer(
+        (PVOID volatile*)&g_DeviceObjectForWorkItems, NULL, NULL);
+    if (devObj == NULL) return;
+
+    PCLEANUP_WORK_ITEM_CONTEXT pContext = (PCLEANUP_WORK_ITEM_CONTEXT)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(CLEANUP_WORK_ITEM_CONTEXT), 'mrCW');
+    if (pContext != NULL) {
+        pContext->ProcessId = ProcessId;
+        pContext->WorkItem = IoAllocateWorkItem(devObj);
+        if (pContext->WorkItem != NULL) {
+            LONG count = InterlockedIncrement(&g_OutstandingWorkItems);
+            if (count > 100) {
+                InterlockedDecrement(&g_OutstandingWorkItems);
+                IoFreeWorkItem(pContext->WorkItem);
+                ExFreePoolWithTag(pContext, 'mrCW');
+            } else {
+                IoQueueWorkItem(pContext->WorkItem, CleanupWorkerRoutine, DelayedWorkQueue, pContext);
+            }
+        } else {
+            ExFreePoolWithTag(pContext, 'mrCW');
+        }
+    }
+}
+
 void ForceKillExamProcess(HANDLE ProcessId)
 {
-    if (g_DeviceObjectForWorkItems == NULL) return;
+    // OMEGA-FINAL M03: Atomic read to prevent TOCTOU race during teardown
+    PDEVICE_OBJECT devObj = (PDEVICE_OBJECT)InterlockedCompareExchangePointer(
+        (PVOID volatile*)&g_DeviceObjectForWorkItems, NULL, NULL);
+    if (devObj == NULL) return;
 
     PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(TERMINATION_WORK_ITEM_CONTEXT), 'mrTW');
     if (pContext != NULL) {
         pContext->ProcessId = ProcessId;
         pContext->ThreadId = NULL;
-        pContext->WorkItem = IoAllocateWorkItem(g_DeviceObjectForWorkItems);
+        pContext->WorkItem = IoAllocateWorkItem(devObj);
         if (pContext->WorkItem != NULL) {
-            InterlockedIncrement(&g_OutstandingWorkItems);
-            IoQueueWorkItem(pContext->WorkItem, TerminationWorkerRoutine, DelayedWorkQueue, pContext);
+            // STATIC ANALYSIS FIX H08: Limit work items to prevent NonPaged pool exhaustion
+            LONG count = InterlockedIncrement(&g_OutstandingWorkItems);
+            if (count > 100) {
+                InterlockedDecrement(&g_OutstandingWorkItems);
+                IoFreeWorkItem(pContext->WorkItem);
+                ExFreePoolWithTag(pContext, 'mrTW');
+            } else {
+                IoQueueWorkItem(pContext->WorkItem, TerminationWorkerRoutine, DelayedWorkQueue, pContext);
+            }
         } else {
             ExFreePoolWithTag(pContext, 'mrTW');
         }
@@ -218,16 +539,26 @@ void ForceKillExamProcess(HANDLE ProcessId)
 
 void ForceKillExamThread(HANDLE ProcessId, HANDLE ThreadId)
 {
-    if (g_DeviceObjectForWorkItems == NULL) return;
+    // OMEGA-FINAL M03: Atomic read to prevent TOCTOU race during teardown
+    PDEVICE_OBJECT devObj = (PDEVICE_OBJECT)InterlockedCompareExchangePointer(
+        (PVOID volatile*)&g_DeviceObjectForWorkItems, NULL, NULL);
+    if (devObj == NULL) return;
 
     PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(TERMINATION_WORK_ITEM_CONTEXT), 'mrTW');
     if (pContext != NULL) {
         pContext->ProcessId = ProcessId;
         pContext->ThreadId = ThreadId;
-        pContext->WorkItem = IoAllocateWorkItem(g_DeviceObjectForWorkItems);
+        pContext->WorkItem = IoAllocateWorkItem(devObj);
         if (pContext->WorkItem != NULL) {
-            InterlockedIncrement(&g_OutstandingWorkItems);
-            IoQueueWorkItem(pContext->WorkItem, TerminationWorkerRoutine, DelayedWorkQueue, pContext);
+            // STATIC ANALYSIS FIX H08: Limit work items to prevent NonPaged pool exhaustion
+            LONG count = InterlockedIncrement(&g_OutstandingWorkItems);
+            if (count > 100) {
+                InterlockedDecrement(&g_OutstandingWorkItems);
+                IoFreeWorkItem(pContext->WorkItem);
+                ExFreePoolWithTag(pContext, 'mrTW');
+            } else {
+                IoQueueWorkItem(pContext->WorkItem, TerminationWorkerRoutine, DelayedWorkQueue, pContext);
+            }
         } else {
             ExFreePoolWithTag(pContext, 'mrTW');
         }
@@ -237,17 +568,14 @@ void ForceKillExamThread(HANDLE ProcessId, HANDLE ThreadId)
 NTSTATUS RegisterSecurityCallbacks(PDRIVER_OBJECT DriverObject)
 {
     NTSTATUS status;
-    NTSTATUS firstFailure = STATUS_SUCCESS;
 
     // Đăng ký Process Callback
     status = PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallbackEx, FALSE);
     if (NT_SUCCESS(status)) {
         InterlockedExchange(&g_ProcessCallbackRegistered, 1);
     } else {
-        KdPrint(("AtchKernel: Đăng ký Process Callback thất bại. Status: 0x%X\n", status));
-        if (NT_SUCCESS(firstFailure)) {
-            firstFailure = status;
-        }
+        AtchPrint(("AtchKernel: Đăng ký Process Callback thất bại. Status: 0x%X\n", status));
+        return status;
     }
 
     // Đăng ký Registry Callback
@@ -255,36 +583,43 @@ NTSTATUS RegisterSecurityCallbacks(PDRIVER_OBJECT DriverObject)
     RtlInitUnicodeString(&altitude, L"360000"); // Độ cao (Altitude) đăng ký
     status = CmRegisterCallbackEx(RegistryCallback, &altitude, DriverObject, NULL, &g_RegistryCookie, NULL);
     if (!NT_SUCCESS(status)) {
-        KdPrint(("AtchKernel: Đăng ký Registry Callback thất bại. Status: 0x%X\n", status));
-        if (NT_SUCCESS(firstFailure)) {
-            firstFailure = status;
-        }
+        AtchPrint(("AtchKernel: Đăng ký Registry Callback thất bại. Status: 0x%X\n", status));
+        PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallbackEx, TRUE);
+        InterlockedExchange(&g_ProcessCallbackRegistered, 0);
+        return status;
     }
 
     // Đăng ký ObCallback
-    OB_OPERATION_REGISTRATION obOpReg;
-    obOpReg.ObjectType = PsProcessType;
-    obOpReg.Operations = OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE;
-    obOpReg.PreOperation = PreOperationCallback;
-    obOpReg.PostOperation = NULL;
+    OB_OPERATION_REGISTRATION obOpReg[2];
+    obOpReg[0].ObjectType = PsProcessType;
+    obOpReg[0].Operations = OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE;
+    obOpReg[0].PreOperation = PreOperationCallback;
+    obOpReg[0].PostOperation = NULL;
+
+    obOpReg[1].ObjectType = PsThreadType;
+    obOpReg[1].Operations = OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE;
+    obOpReg[1].PreOperation = PreOperationCallback;
+    obOpReg[1].PostOperation = NULL;
 
     OB_CALLBACK_REGISTRATION obReg;
     obReg.Version = OB_FLT_REGISTRATION_VERSION;
-    obReg.OperationRegistrationCount = 1;
+    obReg.OperationRegistrationCount = 2;
     RtlInitUnicodeString(&altitude, L"360001");
     obReg.Altitude = altitude;
     obReg.RegistrationContext = NULL;
-    obReg.OperationRegistration = &obOpReg;
+    obReg.OperationRegistration = obOpReg;
 
     status = ObRegisterCallbacks(&obReg, &g_ObRegistrationHandle);
     if (!NT_SUCCESS(status)) {
-        KdPrint(("AtchKernel: Đăng ký ObCallbacks thất bại. Status: 0x%X\n", status));
-        if (NT_SUCCESS(firstFailure)) {
-            firstFailure = status;
-        }
+        AtchPrint(("AtchKernel: Đăng ký ObCallbacks thất bại. Status: 0x%X\n", status));
+        CmUnRegisterCallback(g_RegistryCookie);
+        g_RegistryCookie.QuadPart = 0;
+        PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallbackEx, TRUE);
+        InterlockedExchange(&g_ProcessCallbackRegistered, 0);
+        return status;
     }
 
-    return firstFailure;
+    return STATUS_SUCCESS;
 }
 
 void UnregisterSecurityCallbacks()
@@ -294,35 +629,34 @@ void UnregisterSecurityCallbacks()
         InterlockedExchange(&g_ProcessCallbackRegistered, 0);
     }
 
-    if (g_RegistryCookie.QuadPart != 0) {
-        CmUnRegisterCallback(g_RegistryCookie);
-        g_RegistryCookie.QuadPart = 0;
+    // OMEGA-II M01: Atomic exchange prevents torn 64-bit read on 32-bit builds
+    LARGE_INTEGER cookieCopy;
+    cookieCopy.QuadPart = InterlockedExchange64(&g_RegistryCookie.QuadPart, 0);
+    if (cookieCopy.QuadPart != 0) {
+        CmUnRegisterCallback(cookieCopy);
     }
 
-    if (g_ObRegistrationHandle != NULL) {
-        ObUnRegisterCallbacks(g_ObRegistrationHandle);
-        g_ObRegistrationHandle = NULL;
+    // OMEGA-II M02: Atomic exchange prevents double-unregister race
+    PVOID obHandle = InterlockedExchangePointer((PVOID volatile*)&g_ObRegistrationHandle, NULL);
+    if (obHandle != NULL) {
+        ObUnRegisterCallbacks(obHandle);
     }
 }
 
 void DrainWorkItems()
 {
-    // Wait for all outstanding work items to complete (max 5 seconds)
-    const LONG maxIterations = 50; // 50 * 100ms = 5 seconds
+    // OMEGA-II HIGH-07: Spin-wait with back-off replaces racy check-clear-check-wait pattern.
+    // OMEGA-III: Added 10-second timeout to prevent permanent unload hang.
     LARGE_INTEGER delay;
-    delay.QuadPart = -1000000LL; // 100ms in 100-nanosecond intervals
-
-    for (LONG i = 0; i < maxIterations; i++) {
-        if (InterlockedOr(&g_OutstandingWorkItems, 0) == 0) {
-            break;
-        }
-        KdPrint(("AtchKernel: DrainWorkItems - Waiting for %ld outstanding work items...\n",
-                 InterlockedOr(&g_OutstandingWorkItems, 0)));
+    delay.QuadPart = -10000LL; // 1ms back-off
+    ULONG retries = 0;
+    const ULONG maxRetries = 10000; // 10 seconds max (10000 * 1ms)
+    while (InterlockedOr(&g_OutstandingWorkItems, 0) > 0 && retries < maxRetries) {
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        retries++;
     }
-
-    if (InterlockedOr(&g_OutstandingWorkItems, 0) != 0) {
-        KdPrint(("AtchKernel: DrainWorkItems - WARNING: %ld work items still outstanding after timeout!\n",
-                 InterlockedOr(&g_OutstandingWorkItems, 0)));
+    if (retries >= maxRetries) {
+        AtchPrint(("[Atch_Kernel] WARNING: DrainWorkItems timed out after 10s, %ld items still outstanding\n",
+            InterlockedOr(&g_OutstandingWorkItems, 0)));
     }
 }

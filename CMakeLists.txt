@@ -19,11 +19,44 @@ if(DEFINED ENV{WindowsSDKVersion})
     # The env var sometimes has a trailing backslash – strip it.
     string(REGEX REPLACE "[/\\\\]+$" "" WDK_VERSION "$ENV{WindowsSDKVersion}")
 else()
-    set(WDK_VERSION "10.0.22621.0")
+    # Auto-detect: find the highest installed SDK version with km/ headers
+    file(GLOB _SDK_VERSIONS LIST_DIRECTORIES true "${WDK_ROOT}/Include/10.*")
+    set(WDK_VERSION "")
+    foreach(_dir ${_SDK_VERSIONS})
+        if(IS_DIRECTORY "${_dir}/km")
+            get_filename_component(_ver "${_dir}" NAME)
+            set(WDK_VERSION "${_ver}")
+        endif()
+    endforeach()
+    if(NOT WDK_VERSION)
+        message(FATAL_ERROR "Could not auto-detect WDK version. Install WDK or set WindowsSDKVersion.")
+    endif()
+    message(STATUS "Auto-detected WDK version: ${WDK_VERSION}")
 endif()
 
 set(WDK_INC_ROOT "${WDK_ROOT}/Include/${WDK_VERSION}")
 set(WDK_LIB_ROOT "${WDK_ROOT}/Lib/${WDK_VERSION}")
+
+# ── KMDF (WDF) paths ─────────────────────────────────────────────────────────
+set(WDK_KMDF_INC "${WDK_ROOT}/Include/wdf/kmdf/1.33")
+if(NOT EXISTS "${WDK_KMDF_INC}")
+    # Fallback: find the highest installed KMDF version
+    file(GLOB _KMDF_VERSIONS LIST_DIRECTORIES true "${WDK_ROOT}/Include/wdf/kmdf/*")
+    list(LENGTH _KMDF_VERSIONS _KMDF_COUNT)
+    if(_KMDF_COUNT GREATER 0)
+        list(SORT _KMDF_VERSIONS COMPARE NATURAL ORDER DESCENDING)
+        list(GET _KMDF_VERSIONS 0 WDK_KMDF_INC)
+    endif()
+endif()
+set(WDK_KMDF_LIB "${WDK_ROOT}/Lib/wdf/kmdf/x64/1.33")
+if(NOT EXISTS "${WDK_KMDF_LIB}")
+    file(GLOB _KMDF_LIB_VERSIONS LIST_DIRECTORIES true "${WDK_ROOT}/Lib/wdf/kmdf/x64/*")
+    list(LENGTH _KMDF_LIB_VERSIONS _KMDF_LIB_COUNT)
+    if(_KMDF_LIB_COUNT GREATER 0)
+        list(SORT _KMDF_LIB_VERSIONS COMPARE NATURAL ORDER DESCENDING)
+        list(GET _KMDF_LIB_VERSIONS 0 WDK_KMDF_LIB)
+    endif()
+endif()
 
 # ── Driver source files ───────────────────────────────────────────────────────
 file(GLOB_RECURSE DRIVER_SOURCES CONFIGURE_DEPENDS
@@ -40,6 +73,9 @@ set_target_properties(Ring0_CoreDriver PROPERTIES SUFFIX ".sys")
 target_include_directories(Ring0_CoreDriver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Ring0_CoreDriver/inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ring0_CoreDriver
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 if(MSVC)
@@ -48,6 +84,7 @@ if(MSVC)
         "${WDK_INC_ROOT}/km"
         "${WDK_INC_ROOT}/km/crt"
         "${WDK_INC_ROOT}/shared"
+        "${WDK_KMDF_INC}"
     )
 
     # ── Compile options for kernel mode driver ────────────────────────────────
@@ -58,6 +95,11 @@ if(MSVC)
         "/Zc:threadSafeInit-"  # Disable thread-safe statics
         "/W4"                  # Warning level 4
         "/WX"                  # Treat warnings as errors
+        "/wd4324"              # Suppress: struct padding from WDK headers
+        "/wd4273"              # Suppress: ZwXxx inconsistent dll linkage from ntddk.h
+        "/guard:cf"            # Control Flow Guard
+        # "/Qspectre"            # Spectre Mitigation — TEMPORARILY DISABLED (requires Spectre libs)
+        #                        # Manual _mm_lfence() already inserted at all critical bounds checks
     )
 
     # ── Link options for kernel mode driver (modern target_link_options) ──────
@@ -69,6 +111,11 @@ if(MSVC)
         /OPT:REF
         /OPT:ICF
         /MANIFEST:NO
+        /guard:cf
+        /NXCOMPAT
+        /DYNAMICBASE
+        /CETCOMPAT
+        /PDBALTPATH:%_PDB%
     )
 
     # ── WDK kernel libraries ─────────────────────────────────────────────────
@@ -88,6 +135,16 @@ if(MSVC)
             message(WARNING "find_library did not locate ${_lib}.lib – using direct path fallback.")
         endif()
     endforeach()
+
+    # ── KMDF framework libraries ─────────────────────────────────────────────
+    if(EXISTS "${WDK_KMDF_LIB}")
+        target_link_libraries(Ring0_CoreDriver PRIVATE
+            "${WDK_KMDF_LIB}/WdfLdr.lib"
+            "${WDK_KMDF_LIB}/WdfDriverEntry.lib"
+        )
+    else()
+        message(WARNING "KMDF library directory not found: ${WDK_KMDF_LIB}")
+    endif()
 
     # ── Kernel Mode Definitions ──────────────────────────────────────────────
     target_compile_definitions(Ring0_CoreDriver PRIVATE

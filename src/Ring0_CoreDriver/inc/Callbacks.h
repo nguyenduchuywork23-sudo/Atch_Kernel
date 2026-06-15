@@ -1,7 +1,9 @@
 #pragma once
-#include <ntddk.h>
+#include <ntifs.h>
 
+#ifdef __cplusplus
 extern "C" {
+#endif
     NTSTATUS RegisterSecurityCallbacks(PDRIVER_OBJECT DriverObject);
     void UnregisterSecurityCallbacks();
 
@@ -16,5 +18,8 @@ extern "C" {
 
     void SetDeviceObjectForCallbacks(PDEVICE_OBJECT DeviceObject);
 
+    void InitCallbacks();
     void DrainWorkItems();
+#ifdef __cplusplus
 }
+#endif
