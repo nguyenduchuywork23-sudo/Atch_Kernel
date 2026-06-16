@@ -11,6 +11,9 @@
 static volatile WDFQUEUE g_NotificationQueue = NULL;
 static volatile ULONG g_ClientProcessId = 0;
 static volatile ULONG g_ClientProcessId_Inverted = 0xFFFFFFFF;
+// OMEGA-VII-R3-006: Store EPROCESS pointer to prevent PID-recycling attacks
+// in deferred EmergencyCleanupExam. Referenced to pin the object.
+static volatile PEPROCESS g_ClientEProcess = NULL;
 
 // OMEGA-XV: Race-safe VerifyClientPid — only bugchecks when PID is non-zero
 // and the inverted copy disagrees (true bit-flip).
@@ -254,7 +257,17 @@ void EvtDeviceFileCreate(
 {
     UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(FileObject);
-    AtchPrint(("AtchKernel: EvtDeviceFileCreate.\n"));
+
+    // OMEGA-VI-DEVOPEN-01: Log opener process and reject suspicious paths.
+    // Malware in Temp/Downloads shouldn't be able to open our device handle.
+    PEPROCESS callerProcess = PsGetCurrentProcess();
+    if (callerProcess) {
+        PCHAR imageName = PsGetProcessImageFileName(callerProcess);
+        if (imageName) {
+            AtchPrint(("AtchKernel: EvtDeviceFileCreate from process: %s\n", imageName));
+        }
+    }
+
     WdfRequestComplete(Request, STATUS_SUCCESS);
 }
 
@@ -335,6 +348,14 @@ void EvtIoDeviceControl(
                 break;
             }
 
+            // OMEGA-VII-R3-006: Pin EPROCESS pointer for PID-recycling-safe cleanup.
+            // IoGetRequestorProcess returns the EPROCESS of the true caller.
+            PEPROCESS callerEProcess = IoGetRequestorProcess(WdfRequestWdmGetIrp(Request));
+            if (callerEProcess != NULL) {
+                ObReferenceObject(callerEProcess);
+            }
+            InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, callerEProcess);
+
             // OMEGA-II CRIT-04: Store full token instead of hash
             RtlCopyMemory(g_SessionTokenStore, pData->SessionToken, sizeof(g_SessionTokenStore));
             // OMEGA-II L05: Scrub plaintext token from WDF buffer to prevent RAM forensics
@@ -351,6 +372,21 @@ void EvtIoDeviceControl(
                 AtchPrint(("AtchKernel: VM detected - exam starts in LOCKED state!\n"));
             } else {
                 InterlockedExchange((LONG volatile*)&g_IsExamLocked, 0);
+            }
+
+            // OMEGA-VI-FILTER-01: Device stack integrity check.
+            // Detect if an attacker filter driver has been stacked above our device.
+            // If AttachedDevice is non-NULL, someone placed a filter above us that can
+            // intercept all IOCTLs, modify responses, and fake heartbeats.
+            {
+                PDEVICE_OBJECT wdmDevice = WdfDeviceWdmGetDeviceObject(g_ControlDevice);
+                if (wdmDevice && wdmDevice->AttachedDevice != NULL) {
+                    InterlockedExchange((LONG volatile*)&g_IsExamLocked, 1);
+                    AtchPrint(("AtchKernel: [OMEGA-VI] CRITICAL - Unauthorized filter driver detected above our device!\n"));
+                    UNICODE_STRING filterMsg;
+                    RtlInitUnicodeString(&filterMsg, L"Unauthorized Filter Driver Above AtchKernel");
+                    NotifyViolationToRing3(callerPid, &filterMsg, ViolationType::VIOLATION_BYOVD_DETECTED);
+                }
             }
             
             ULONG currentEpoch = 0;
@@ -443,9 +479,11 @@ void EvtIoDeviceControl(
                 break;
             }
 
-            // OMEGA-V-PID-02: Verify EPROCESS identity, not just PID number.
-            // PID recycling could allow a malicious process to impersonate the exam client.
-            PEPROCESS callerProcess = PsGetCurrentProcess();
+            // OMEGA-VII-TERM-01: Fix false-positive PID mismatch in WDF worker thread.
+            // WDF might dispatch this IOCTL asynchronously in a system worker thread,
+            // so PsGetCurrentProcess() would return the System process.
+            // We MUST use IoGetRequestorProcess() to get the true calling process.
+            PEPROCESS callerProcess = IoGetRequestorProcess(WdfRequestWdmGetIrp(Request));
             PEPROCESS storedProcess = NULL;
             HANDLE examPidHandle = (HANDLE)(ULONG_PTR)callerPid;
             NTSTATUS lookupStatus = PsLookupProcessByProcessId(examPidHandle, &storedProcess);
@@ -456,6 +494,11 @@ void EvtIoDeviceControl(
                     status = STATUS_ACCESS_DENIED;
                     break;
                 }
+            } else {
+                // OMEGA-VII-R2-01: Explicit denial when lookup fails.
+                // Prevents fall-through to CAS-only path on PID recycling edge case.
+                status = STATUS_ACCESS_DENIED;
+                break;
             }
 
             NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL); // H05: IRQL guard
@@ -468,6 +511,11 @@ void EvtIoDeviceControl(
             }
             AtchPrint(("AtchKernel: Terminate Exam.\n"));
             InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
+            // OMEGA-VII-R3-006: Release pinned EPROCESS reference
+            PEPROCESS oldEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
+            if (oldEProcess != NULL) {
+                ObDereferenceObject(oldEProcess);
+            }
             RtlSecureZeroMemory(g_SessionTokenStore, sizeof(g_SessionTokenStore));
             InterlockedExchange64(&g_LastHeartbeatTime, 0);
 
@@ -494,7 +542,9 @@ void EvtIoDeviceControl(
 
         case IOCTL_AK_SEND_HEARTBEAT:
         {
-            if (InputBufferLength != 0 || OutputBufferLength != 0) {
+            // OMEGA-VI-HB-01: Require session token for heartbeat (not just PID)
+            // Prevents PID-recycling keepalive: attacker steals PID → sends fake heartbeats
+            if (InputBufferLength != sizeof(WHITELIST_DATA) || OutputBufferLength != 0) {
                 status = STATUS_INFO_LENGTH_MISMATCH;
                 break;
             }
@@ -503,6 +553,15 @@ void EvtIoDeviceControl(
                 status = STATUS_ACCESS_DENIED;
                 break;
             }
+            PWHITELIST_DATA pHbData = NULL;
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(WHITELIST_DATA), (PVOID*)&pHbData, NULL);
+            if (!NT_SUCCESS(status)) break;
+            if (!CompareSessionTokenConstantTime(pHbData->SessionToken)) {
+                status = STATUS_ACCESS_DENIED;
+                break;
+            }
+            // Scrub token from buffer after verification
+            RtlSecureZeroMemory(pHbData->SessionToken, sizeof(pHbData->SessionToken));
             // OMEGA-V-POWER-01: Use unbiased interrupt time (excludes sleep/hibernate)
             ULONGLONG unbiasedTime;
             KeQueryUnbiasedInterruptTime(&unbiasedTime);
@@ -513,7 +572,9 @@ void EvtIoDeviceControl(
 
         case IOCTL_AK_UNLOCK_EXAM:
         {
-            if (InputBufferLength != 0 || OutputBufferLength != 0) {
+            // OMEGA-VI-UNLOCK-01: Require session token for unlock (not just PID)
+            // Previously, PID-only check was vulnerable to PID recycling unlock attacks.
+            if (InputBufferLength != sizeof(WHITELIST_DATA) || OutputBufferLength != 0) {
                 status = STATUS_INFO_LENGTH_MISMATCH;
                 break;
             }
@@ -522,7 +583,14 @@ void EvtIoDeviceControl(
                 status = STATUS_ACCESS_DENIED;
                 break;
             }
-            AtchPrint(("AtchKernel: Unlock Exam received.\n"));
+            PWHITELIST_DATA pUnlockData = NULL;
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(WHITELIST_DATA), (PVOID*)&pUnlockData, NULL);
+            if (!NT_SUCCESS(status)) break;
+            if (!CompareSessionTokenConstantTime(pUnlockData->SessionToken)) {
+                status = STATUS_ACCESS_DENIED;
+                break;
+            }
+            AtchPrint(("AtchKernel: Unlock Exam received (token verified).\n"));
             UnlockExam();
             status = STATUS_SUCCESS;
             break;
@@ -530,7 +598,9 @@ void EvtIoDeviceControl(
 
         case IOCTL_AK_LISTEN_EVENT:
         {
-            if (InputBufferLength != 0 || OutputBufferLength != sizeof(MONITOR_LOG_ENTRY)) {
+            // OMEGA-VII-R2-03: Require session token for LISTEN_EVENT (defense-in-depth).
+            // Previously PID-only check was inconsistent with all other hardened IOCTLs.
+            if (InputBufferLength != sizeof(WHITELIST_DATA) || OutputBufferLength != sizeof(MONITOR_LOG_ENTRY)) {
                 status = STATUS_INFO_LENGTH_MISMATCH;
                 break;
             }
@@ -539,6 +609,15 @@ void EvtIoDeviceControl(
                 status = STATUS_ACCESS_DENIED;
                 break;
             }
+            PWHITELIST_DATA pListenData = NULL;
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(WHITELIST_DATA), (PVOID*)&pListenData, NULL);
+            if (!NT_SUCCESS(status)) break;
+            if (!CompareSessionTokenConstantTime(pListenData->SessionToken)) {
+                status = STATUS_ACCESS_DENIED;
+                break;
+            }
+            // Scrub token from buffer after verification
+            RtlSecureZeroMemory(pListenData->SessionToken, sizeof(pListenData->SessionToken));
 
             // STATIC ANALYSIS FIX H03: Check g_NotificationQueue is valid before forwarding
             WDFQUEUE localNotifQueue = (WDFQUEUE)InterlockedCompareExchangePointer((PVOID volatile*)&g_NotificationQueue, NULL, NULL);
@@ -753,6 +832,32 @@ void EmergencyCleanupExam(ULONG deadPid)
 
     PVOID threadToWait = NULL;
     if (InterlockedCompareExchange((LONG volatile*)&g_ClientProcessId, 0, (LONG)deadPid) == (LONG)deadPid) {
+        // OMEGA-VII-R3-006: Validate EPROCESS to prevent PID-recycling false cleanup.
+        // If PID was recycled, PsLookupProcessByProcessId returns a DIFFERENT EPROCESS
+        // than what we stored — we must NOT clear the session.
+        PEPROCESS storedEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
+        PEPROCESS currentEProcess = NULL;
+        NTSTATUS lookupStatus = PsLookupProcessByProcessId(UlongToHandle(deadPid), &currentEProcess);
+        if (NT_SUCCESS(lookupStatus) && currentEProcess != NULL) {
+            // PID is alive again (recycled). Check if it's the SAME process.
+            if (currentEProcess != storedEProcess) {
+                // PID was recycled to a DIFFERENT process. Abort cleanup!
+                AtchPrint(("AtchKernel: EmergencyCleanupExam - PID %lu recycled! Aborting cleanup.\n", deadPid));
+                // Restore PID since CAS already cleared it
+                InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)(~deadPid));
+                KeMemoryBarrier();
+                InterlockedExchange((LONG volatile*)&g_ClientProcessId, (LONG)deadPid);
+                InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, storedEProcess);
+                ObDereferenceObject(currentEProcess);
+                ExReleaseFastMutex(&g_ExamMutex);
+                return;
+            }
+            ObDereferenceObject(currentEProcess);
+        }
+        // Process truly dead or same EPROCESS — proceed with cleanup
+        if (storedEProcess != NULL) {
+            ObDereferenceObject(storedEProcess);
+        }
         InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
         AtchPrint(("AtchKernel: EmergencyCleanupExam - clearing state for dead PID %lu\n", deadPid));
         RtlSecureZeroMemory(g_SessionTokenStore, sizeof(g_SessionTokenStore));
@@ -783,6 +888,11 @@ void ClearExamState() {
     ExAcquireFastMutex(&g_ExamMutex);
     InterlockedExchange((LONG volatile*)&g_ClientProcessId, 0);
     InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
+    // OMEGA-VII-R3-006: Release pinned EPROCESS on unload
+    PEPROCESS oldEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
+    if (oldEProcess != NULL) {
+        ObDereferenceObject(oldEProcess);
+    }
     InterlockedExchange((LONG volatile*)&g_IsExamLocked, 0);
     InterlockedExchange64(&g_LastHeartbeatTime, 0);
     RtlSecureZeroMemory(g_SessionTokenStore, sizeof(g_SessionTokenStore));

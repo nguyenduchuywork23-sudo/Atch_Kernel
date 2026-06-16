@@ -79,6 +79,11 @@ static NTSTATUS FilterDispatchPassThrough(PDEVICE_OBJECT DeviceObject, PIRP Irp)
         if (ext->Magic == FIDO_MAGIC) {
             NTSTATUS lockStatus = IoAcquireRemoveLock(&ext->RemoveLock, Irp);
             if (!NT_SUCCESS(lockStatus)) {
+                // OMEGA-VI-POWER-01: Must start next power IRP even on remove lock failure
+                PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+                if (stack->MajorFunction == IRP_MJ_POWER) {
+                    PoStartNextPowerIrp(Irp);
+                }
                 Irp->IoStatus.Status = lockStatus;
                 Irp->IoStatus.Information = 0;
                 IoCompleteRequest(Irp, IO_NO_INCREMENT);
@@ -86,6 +91,37 @@ static NTSTATUS FilterDispatchPassThrough(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             }
 
             PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+
+            // OMEGA-V-FILTER-02: Handle PnP REMOVE_DEVICE to prevent BSOD on USB keyboard unplug.
+            // Without this, unplugging a USB keyboard leaves a dangling filter device.
+            if (stack->MajorFunction == IRP_MJ_PNP &&
+                stack->MinorFunction == IRP_MN_REMOVE_DEVICE) {
+                
+                // OMEGA-VII-PNP-01: MUST wait for remove lock BEFORE passing IRP down.
+                IoReleaseRemoveLockAndWait(&ext->RemoveLock, Irp);
+
+                IoSkipCurrentIrpStackLocation(Irp);
+                NTSTATUS pnpStatus = IoCallDriver(ext->LowerDevice, Irp);
+
+                // OMEGA-VII-R1-001: Atomically remove from list AND invalidate magic
+                // under spinlock to prevent double-remove race with UninitializeInputBlocker.
+                KIRQL oldIrql;
+                KeAcquireSpinLock(&g_FiDOListLock, &oldIrql);
+                RemoveEntryList(&ext->ListEntry);
+                // Poison the list entry to make any second RemoveEntryList crash-safe
+                ext->ListEntry.Flink = NULL;
+                ext->ListEntry.Blink = NULL;
+                ext->Magic = 0; // Invalidate before releasing lock
+                KeReleaseSpinLock(&g_FiDOListLock, oldIrql);
+
+                // Detach and delete the filter device
+                IoDetachDevice(ext->LowerDevice);
+                ext->LowerDevice = NULL;
+                IoDeleteDevice(DeviceObject);
+
+                return pnpStatus;
+            }
+
             IoSkipCurrentIrpStackLocation(Irp);
 
             // Power IRPs require special handling
@@ -138,6 +174,11 @@ static NTSTATUS FilterDispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             // Acquire remove lock to prevent teardown while IRP is in flight
             NTSTATUS lockStatus = IoAcquireRemoveLock(&ext->RemoveLock, Irp);
             if (!NT_SUCCESS(lockStatus)) {
+                // OMEGA-VI-POWER-01: Must start next power IRP even on remove lock failure
+                PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+                if (stack->MajorFunction == IRP_MJ_POWER) {
+                    PoStartNextPowerIrp(Irp);
+                }
                 Irp->IoStatus.Status = lockStatus;
                 Irp->IoStatus.Information = 0;
                 IoCompleteRequest(Irp, IO_NO_INCREMENT);

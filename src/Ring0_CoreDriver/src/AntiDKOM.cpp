@@ -118,8 +118,10 @@ void CheckAntiDKOM() {
     if (now - lastCheck < 300000000LL) return; // 30 seconds
     InterlockedExchange64(&g_LastDkomCheckTime, now);
 
-    // OMEGA-FINAL HIGH-09: Extend PID scan range to 0x40000 to cover heavily loaded systems
-    for (ULONG pid = 4; pid < 0x40000; pid += 4) {
+    // OMEGA-VII-R4-001: Extended PID scan range from 0x40000 to 0x400000.
+    // Windows PIDs can reach ~0x3FFFFFFC (2^30). Previous 0x40000 was trivially
+    // bypassable by exhausting low PIDs. 0x400000 covers 4M PIDs (realistic max).
+    for (ULONG pid = 4; pid < 0x400000; pid += 4) {
         PEPROCESS process = NULL;
         NTSTATUS status = PsLookupProcessByProcessId(UlongToHandle(pid), &process);
         

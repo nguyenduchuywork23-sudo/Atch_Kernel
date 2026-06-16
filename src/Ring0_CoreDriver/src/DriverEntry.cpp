@@ -59,8 +59,8 @@ extern "C" NTSTATUS DriverEntry(
         return status;
     }
 
-    // Khởi tạo Device
-    PWDFDEVICE_INIT pDeviceInit = WdfControlDeviceInitAllocate(driver, &SDDL_DEVOBJ_SYS_ALL_ADM_RWX_WORLD_R);
+    // OMEGA-V-WDF-01: Restrict to System+Admin only — blocks unprivileged IOCTL probing
+    PWDFDEVICE_INIT pDeviceInit = WdfControlDeviceInitAllocate(driver, &SDDL_DEVOBJ_SYS_ALL_ADM_ALL);
     if (pDeviceInit == NULL) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         AtchPrint(("AtchKernel: WdfControlDeviceInitAllocate thất bại.\n"));
@@ -175,6 +175,91 @@ extern "C" NTSTATUS DriverEntry(
     // Khởi tạo lõi Hypervisor Ring -1
     InitHypervisorCore();
 
+    // OMEGA-V-BOOT-04: Self-register for Safe Mode to prevent Safe Mode bypass attack.
+    // Without this, attacker boots to Safe Mode → disables driver → reboots → zero protection.
+    {
+        UNICODE_STRING safeBootMinimal;
+        RtlInitUnicodeString(&safeBootMinimal,
+            L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Minimal\\AtchKernel.sys");
+        UNICODE_STRING safeBootNetwork;
+        RtlInitUnicodeString(&safeBootNetwork,
+            L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Network\\AtchKernel.sys");
+
+        HANDLE keyHandle = NULL;
+        OBJECT_ATTRIBUTES objAttr;
+        InitializeObjectAttributes(&objAttr, &safeBootMinimal, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+        ULONG disposition = 0;
+        NTSTATUS sbStatus = ZwCreateKey(&keyHandle, KEY_SET_VALUE, &objAttr, 0, NULL, REG_OPTION_NON_VOLATILE, &disposition);
+        if (NT_SUCCESS(sbStatus) && keyHandle) {
+            UNICODE_STRING valueName;
+            RtlInitUnicodeString(&valueName, L"");
+            UNICODE_STRING valueData;
+            RtlInitUnicodeString(&valueData, L"Driver");
+            ZwSetValueKey(keyHandle, &valueName, 0, REG_SZ, valueData.Buffer, valueData.Length + sizeof(WCHAR));
+            ZwClose(keyHandle);
+        }
+
+        keyHandle = NULL;
+        InitializeObjectAttributes(&objAttr, &safeBootNetwork, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+        sbStatus = ZwCreateKey(&keyHandle, KEY_SET_VALUE, &objAttr, 0, NULL, REG_OPTION_NON_VOLATILE, &disposition);
+        if (NT_SUCCESS(sbStatus) && keyHandle) {
+            UNICODE_STRING valueName;
+            RtlInitUnicodeString(&valueName, L"");
+            UNICODE_STRING valueData;
+            RtlInitUnicodeString(&valueData, L"Driver");
+            ZwSetValueKey(keyHandle, &valueName, 0, REG_SZ, valueData.Buffer, valueData.Length + sizeof(WCHAR));
+            ZwClose(keyHandle);
+        }
+        AtchPrint(("AtchKernel: SafeBoot self-registration complete.\n"));
+    }
+
+    // OMEGA-VI-BOOT-01: Harden ACL on service registry key.
+    // Prevents pre-boot ImagePath tampering: attacker modifies ImagePath before driver
+    // loads → driver loads malicious binary instead. Lock key to SYSTEM-only.
+    {
+        UNICODE_STRING serviceKeyPath;
+        RtlInitUnicodeString(&serviceKeyPath, RegistryPath->Buffer);
+        HANDLE svcKeyHandle = NULL;
+        OBJECT_ATTRIBUTES svcObjAttr;
+        InitializeObjectAttributes(&svcObjAttr, &serviceKeyPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+        NTSTATUS aclStatus = ZwOpenKey(&svcKeyHandle, WRITE_DAC | READ_CONTROL, &svcObjAttr);
+        if (NT_SUCCESS(aclStatus) && svcKeyHandle) {
+            // SDDL: SYSTEM full control only, deny all others write
+            UNICODE_STRING sddlString;
+            RtlInitUnicodeString(&sddlString, L"D:P(A;;KA;;;SY)");
+            PSECURITY_DESCRIPTOR pSD = NULL;
+            ULONG sdSize = 0;
+            // Use SeConvertStringSecurityDescriptor if available, or build manually
+            // Simple approach: use ZwSetSecurityObject with a DACL that allows only SYSTEM
+            SECURITY_DESCRIPTOR sd;
+            NTSTATUS sdStatus = RtlCreateSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+            if (NT_SUCCESS(sdStatus)) {
+                // Create ACL with single ACE: SYSTEM full control
+                UCHAR aclBuffer[128] = {0};
+                PACL pAcl = (PACL)aclBuffer;
+                sdStatus = RtlCreateAcl(pAcl, sizeof(aclBuffer), ACL_REVISION);
+                if (NT_SUCCESS(sdStatus)) {
+                    // SID for SYSTEM (S-1-5-18)
+                    SID systemSid = {0};
+                    systemSid.Revision = SID_REVISION;
+                    systemSid.SubAuthorityCount = 1;
+                    systemSid.IdentifierAuthority = SECURITY_NT_AUTHORITY;
+                    systemSid.SubAuthority[0] = SECURITY_LOCAL_SYSTEM_RID;
+
+                    sdStatus = RtlAddAccessAllowedAce(pAcl, ACL_REVISION, KEY_ALL_ACCESS, &systemSid);
+                    if (NT_SUCCESS(sdStatus)) {
+                        sdStatus = RtlSetDaclSecurityDescriptor(&sd, TRUE, pAcl, FALSE);
+                        if (NT_SUCCESS(sdStatus)) {
+                            ZwSetSecurityObject(svcKeyHandle, DACL_SECURITY_INFORMATION, &sd);
+                            AtchPrint(("AtchKernel: Service key ACL hardened to SYSTEM-only.\n"));
+                        }
+                    }
+                }
+            }
+            ZwClose(svcKeyHandle);
+        }
+    }
+
     return STATUS_SUCCESS;
 
 cleanup:
@@ -200,16 +285,18 @@ extern "C" void EvtDriverUnload(_In_ WDFDRIVER Driver)
 
     AtchPrint(("AtchKernel: EvtDriverUnload - Hủy đăng ký callbacks.\n"));
     
-    // Phase 1: Stop heartbeat monitoring thread
-    PVOID threadToWait = SignalStopHeartbeatThread();
-
-    // Phase 2: Clear exam state securely to prevent callbacks from acting on stale PID
+    // Phase 2: Clear exam state FIRST — prevents ObCallback zombie PID log-spam
+    // OMEGA-VII-R1-003: Moved before heartbeat wait to close the window where
+    // stale PID triggers infinite ScheduleEmergencyCleanup attempts.
     extern void ClearExamState();
+    ClearExamState();
+
+    // Phase 2b: Stop heartbeat monitoring thread
+    PVOID threadToWait = SignalStopHeartbeatThread();
     if (threadToWait != NULL) {
         KeWaitForSingleObject(threadToWait, Executive, KernelMode, FALSE, NULL);
         ObDereferenceObject(threadToWait);
     }
-    ClearExamState();
 
     // Phase 3: Tear down filter devices (waits for in-flight IRPs)
     UninitializeInputBlocker();

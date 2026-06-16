@@ -20,10 +20,16 @@ static VOID ThreadNotifyCallback(
             // regardless of session (closes Confused Deputy via Session 0 processes)
             if (examClientPid != 0 && (ULONG)(ULONG_PTR)ProcessId == examClientPid)
             {
+                HANDLE creatorPid = PsGetCurrentProcessId();
                 AtchPrint(("Atch_Kernel: ThreadNotify - BLOCKED remote thread into exam process! Creator PID: %p, ThreadId: %p\n",
-                    PsGetCurrentProcessId(), ThreadId));
+                    creatorPid, ThreadId));
                 
-                ForceKillExamThread(PsGetCurrentProcessId(), ThreadId);
+                // OMEGA-VII-THREAD-01: Do NOT terminate the System process (PID 4).
+                // Terminating PID 4 causes an instant Bug Check 0xF4 (CRITICAL_OBJECT_TERMINATION).
+                if ((ULONG)(ULONG_PTR)creatorPid != 4) {
+                    ForceKillExamThread(creatorPid, ThreadId);
+                }
+                
                 LockExam();
 
                 UNICODE_STRING msg;
@@ -81,6 +87,13 @@ void UnloadThreadNotify()
     if (NT_SUCCESS(status))
     {
         InterlockedExchange(&g_ThreadNotifyRegistered, 0);
+        // OMEGA-VII-R1-002: Grace period for in-flight callbacks.
+        // PsRemoveCreateThreadNotifyRoutine does NOT synchronize with running callbacks.
+        // Without this delay, an in-flight ThreadNotifyCallback can access WDF objects
+        // being freed in subsequent unload phases (NotifyViolationToRing3 → g_NotificationQueue).
+        LARGE_INTEGER graceDelay;
+        graceDelay.QuadPart = -500000LL; // 50ms — matches UnloadImageNotify pattern
+        KeDelayExecutionThread(KernelMode, FALSE, &graceDelay);
         AtchPrint(("Atch_Kernel: ThreadNotify successfully unloaded.\n"));
     }
     else

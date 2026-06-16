@@ -142,7 +142,8 @@ NTSTATUS RegistryCallback(
     REG_NOTIFY_CLASS notifyClass = (REG_NOTIFY_CLASS)(ULONG_PTR)Argument1;
 
     // Chặn chỉnh sửa khóa Image File Execution Options (IFEO) và khóa Service
-    if (notifyClass == RegNtPreSetValueKey || notifyClass == RegNtPreDeleteKey || notifyClass == RegNtPreDeleteValueKey || notifyClass == RegNtPreRenameKey || notifyClass == RegNtPreCreateKeyEx || notifyClass == RegNtPreCreateKey || notifyClass == RegNtPreRestoreKey || notifyClass == RegNtPreReplaceKey || notifyClass == RegNtPreLoadKey || notifyClass == RegNtPreSetKeySecurity) {
+    // OMEGA-VII-R3-002: Added RegNtPreSaveKey to block RegSaveKey-based hive export attacks.
+    if (notifyClass == RegNtPreSetValueKey || notifyClass == RegNtPreDeleteKey || notifyClass == RegNtPreDeleteValueKey || notifyClass == RegNtPreRenameKey || notifyClass == RegNtPreCreateKeyEx || notifyClass == RegNtPreCreateKey || notifyClass == RegNtPreRestoreKey || notifyClass == RegNtPreReplaceKey || notifyClass == RegNtPreLoadKey || notifyClass == RegNtPreSetKeySecurity || notifyClass == RegNtPreSaveKey) {
         PVOID keyObject = NULL;
         PCUNICODE_STRING newName = NULL;
         PCUNICODE_STRING completeName = NULL; // For absolute path check
@@ -183,6 +184,10 @@ NTSTATUS RegistryCallback(
             if (info) keyObject = info->Object;
         } else if (notifyClass == RegNtPreSetKeySecurity) {
             PREG_SET_KEY_SECURITY_INFORMATION info = (PREG_SET_KEY_SECURITY_INFORMATION)Argument2;
+            if (info) keyObject = info->Object;
+        } else if (notifyClass == RegNtPreSaveKey) {
+            // OMEGA-VII-R3-002: Block RegSaveKey on protected keys to prevent offline hive tampering.
+            PREG_SAVE_KEY_INFORMATION info = (PREG_SAVE_KEY_INFORMATION)Argument2;
             if (info) keyObject = info->Object;
         }
 
@@ -236,9 +241,11 @@ NTSTATUS RegistryCallback(
                             CheckSubstring(keyName, L"SilentProcessExit") ||
                             CheckSubstring(keyName, L"CurrentControlSet\\Services") ||
                             CheckSubstring(keyName, L"ControlSet001\\Services") ||
-                            // OMEGA-II HIGH-12: Cover additional ControlSets and parent keys
+                            // OMEGA-VII-R3-003: Cover ALL ControlSets (004+) with broader match
                             CheckSubstring(keyName, L"ControlSet002\\Services") ||
-                            CheckSubstring(keyName, L"ControlSet003\\Services")) {
+                            CheckSubstring(keyName, L"ControlSet003\\Services") ||
+                            CheckSubstring(keyName, L"ControlSet004\\Services") ||
+                            CheckSubstring(keyName, L"ControlSet005\\Services")) {
                             block = TRUE;
                         }
                     }

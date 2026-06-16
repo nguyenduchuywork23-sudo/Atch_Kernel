@@ -73,8 +73,13 @@ void CheckMemoryScanner() {
 
     PVOID baseAddress = NULL;
     MEMORY_BASIC_INFORMATION mbi;
+    // OMEGA-VII-R4-003/R4-004: Iteration cap prevents heartbeat thread starvation.
+    // Without this, scanning a process with many regions blocks all monitoring for minutes.
+    ULONG regionCount = 0;
+    const ULONG MAX_REGIONS = 100000;
 
-    while (TRUE) {
+    while (regionCount < MAX_REGIONS) {
+        regionCount++;
         status = ZwQueryVirtualMemory(processHandle, baseAddress, (MEMORY_INFORMATION_CLASS)MemoryBasicInformation, &mbi, sizeof(mbi), NULL);
         if (!NT_SUCCESS(status) || status == STATUS_INVALID_PARAMETER) {
             break;

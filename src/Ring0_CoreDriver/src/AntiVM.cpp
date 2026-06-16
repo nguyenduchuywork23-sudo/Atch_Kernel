@@ -14,43 +14,13 @@ BOOLEAN IsHypervisorDetected() {
     return (InterlockedOr(&g_HypervisorDetected, 0) != 0);
 }
 
-// OMEGA-XXV: Check if MSR_LSTAR has been tampered with since DriverEntry.
-// A stealth hypervisor using EPT hooks will redirect MSR_LSTAR to its own
-// handler, which PatchGuard cannot detect because EPT operates at hardware level.
+// OMEGA-VI-KPTI-01: Removed CheckMsrLstarIntegrity to prevent false-positives under KVA Shadow
 BOOLEAN CheckMsrLstarIntegrity() {
-    ULONG64 baseline = InterlockedCompareExchange64((LONG64 volatile*)&g_BaselineMsrLstar, 0, 0);
-    if (baseline == 0) return TRUE; // Not yet initialized
-
-    __try {
-        ULONG64 currentLstar = __readmsr(MSR_LSTAR);
-        if (currentLstar != baseline) {
-            AtchPrint(("AtchKernel: [OMEGA-XXV] CRITICAL - MSR_LSTAR TAMPERED! Baseline=0x%llX Current=0x%llX\n",
-                       baseline, currentLstar));
-            InterlockedExchange(&g_HypervisorDetected, 1);
-            return FALSE;
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        // MSR read failed — likely in a VM that traps this instruction
-        AtchPrint(("AtchKernel: [OMEGA-XXV] MSR_LSTAR read exception — possible hypervisor trap.\n"));
-        InterlockedExchange(&g_HypervisorDetected, 1);
-        return FALSE;
-    }
-    return TRUE;
+    return TRUE; // Deprecated due to KPTI/HVCI false positives
 }
 
 BOOLEAN DetectHypervisor() {
     int cpuInfo[4] = {0};
-    
-    // OMEGA-XXV: Capture MSR_LSTAR baseline on first call
-    if (InterlockedCompareExchange64((LONG64 volatile*)&g_BaselineMsrLstar, 0, 0) == 0) {
-        __try {
-            ULONG64 lstar = __readmsr(MSR_LSTAR);
-            InterlockedExchange64((LONG64 volatile*)&g_BaselineMsrLstar, (LONG64)lstar);
-            AtchPrint(("AtchKernel: [OMEGA-XXV] MSR_LSTAR baseline captured: 0x%llX\n", lstar));
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            AtchPrint(("AtchKernel: [OMEGA-XXV] Failed to read MSR_LSTAR — running in restricted VM?\n"));
-        }
-    }
 
     // 1. CPUID Leaf 1 (Basic check)
     __cpuid(cpuInfo, 1);

@@ -158,8 +158,8 @@ void LoadImageNotifyRoutine(
                         isSafePath = TRUE;
                     }
 
-                    // OMEGA-III-CRIT-02: DENY-LIST — writable subdirs within System32 that
-                    // attackers can abuse for DLL planting. Check AFTER whitelist match.
+                    // OMEGA-III-CRIT-02 + OMEGA-V-SYMLINK-01: DENY-LIST — writable subdirs
+                    // within System32 that attackers can abuse for DLL planting.
                     if (isSafePath) {
                         if (CheckSubstring(FullImageName, L"\\spool\\") ||
                             CheckSubstring(FullImageName, L"\\FxsTmp\\") ||
@@ -167,7 +167,19 @@ void LoadImageNotifyRoutine(
                             CheckSubstring(FullImageName, L"\\Temp\\") ||
                             CheckSubstring(FullImageName, L"\\tracing\\") ||
                             CheckSubstring(FullImageName, L"\\Com\\") ||
-                            CheckSubstring(FullImageName, L"\\config\\systemprofile\\")) {
+                            CheckSubstring(FullImageName, L"\\config\\systemprofile\\") ||
+                            // OMEGA-V-SYMLINK-01: Additional writable subdirectories
+                            CheckSubstring(FullImageName, L"\\wbem\\Logs\\") ||
+                            CheckSubstring(FullImageName, L"\\LogFiles\\") ||
+                            CheckSubstring(FullImageName, L"\\catroot2\\") ||
+                            CheckSubstring(FullImageName, L"\\CodeIntegrity\\") ||
+                            CheckSubstring(FullImageName, L"\\DriverStore\\") ||
+                            CheckSubstring(FullImageName, L"\\inetsrv\\") ||
+                            CheckSubstring(FullImageName, L"\\Modules\\") ||
+                            // 8.3 short name bypass variants
+                            CheckSubstring(FullImageName, L"\\FXSTMP~") ||
+                            CheckSubstring(FullImageName, L"\\CONFIG~") ||
+                            CheckSubstring(FullImageName, L"\\DRIVER~")) {
                             isSafePath = FALSE;
                             AtchPrint(("[Atch_Kernel] BLOCKED DLL from writable System32 subdir: %wZ\n", FullImageName));
                         }
