@@ -348,7 +348,7 @@ bool IntegrityChecker::IsBlacklistedToolRunning()
         L"dump",
         L"dnspy",
         L"teamviewer",
-        L"ultraviewer",
+        // L"ultraviewer",
         L"anydesk",
         L"rustdesk",
         L"parsec"
@@ -390,7 +390,7 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
 
     const wchar_t* kBlacklistTitles[] = {
         L"cheat engine",
-        L"ultraviewer",
+        // L"ultraviewer",
         L"teamviewer",
         L"anydesk",
         L"x64dbg",

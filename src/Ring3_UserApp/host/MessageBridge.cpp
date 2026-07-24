@@ -84,3 +84,15 @@ void MessageBridge::NotifyIntegrityFail(const std::wstring& reason)
        << L"\"payload\":{\"reason\":\"" << reason << L"\"}}";
     PostToReact(ss.str());
 }
+
+void MessageBridge::NotifySystemStats(int cpuUsage, int ramUsage, int processCount)
+{
+    std::wostringstream ss;
+    ss << L"{\"type\":\"SYSTEM_STATS\","
+       << L"\"payload\":{"
+       << L"\"cpu\":" << cpuUsage << L","
+       << L"\"ram\":" << ramUsage << L","
+       << L"\"processCount\":" << processCount
+       << L"}}";
+    PostToReact(ss.str());
+}

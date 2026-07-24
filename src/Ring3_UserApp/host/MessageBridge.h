@@ -43,6 +43,7 @@ public:
     void NotifyDriverLost();
     // Gửi thông báo vi phạm toàn vẹn Ring 3
     void NotifyIntegrityFail(const std::wstring& reason);
+    void NotifySystemStats(int cpuUsage, int ramUsage, int processCount);
 
 private:
     HWND m_hwnd{ nullptr };

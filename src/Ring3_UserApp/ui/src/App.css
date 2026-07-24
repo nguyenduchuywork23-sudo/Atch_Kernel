@@ -6,6 +6,8 @@
   align-items: center;
   position: relative;
   z-index: 10;
+  background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.1), transparent 40%),
+              radial-gradient(circle at bottom left, rgba(56, 189, 248, 0.1), transparent 40%);
 }
 
 /* ─── Lock Screen ────────────────────────────────────────────────────────── */
@@ -23,7 +25,8 @@
   width: 90px;
   height: 90px;
   border-radius: 50%;
-  background: var(--bg-card);
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(20px);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -530,4 +533,13 @@
 .student-id {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.blink-btn {
+  animation: blink-danger 1.5s infinite alternate;
+}
+
+@keyframes blink-danger {
+  0% { opacity: 1; box-shadow: 0 0 10px rgba(220,38,38,0.5); }
+  100% { opacity: 0.3; box-shadow: 0 0 2px rgba(220,38,38,0.1); }
 }

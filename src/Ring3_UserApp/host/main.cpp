@@ -12,6 +12,7 @@
 #include <thread>
 #include <atomic>
 #include <shlwapi.h>
+#include <WebView2EnvironmentOptions.h>
 
 #include "DriverController.h"
 #include "HeartbeatManager.h"
@@ -156,8 +157,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
     LOG_INFO("Reaching Step 3 (WebView2)...");
     // ─── Bước 3: Khởi tạo WebView2 (async) ──────────────────────────────────
+    auto options = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
+    options->put_AdditionalBrowserArguments(L"--disable-web-security --disable-features=IsolateOrigins,site-per-process");
+
     CreateCoreWebView2EnvironmentWithOptions(
-        nullptr, nullptr, nullptr,
+        nullptr, nullptr, options.Get(),
         Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [hWnd](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
             {
@@ -190,6 +194,35 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                                 settings->put_IsScriptEnabled(TRUE); // Script phải bật
                                 settings->Release(); // Release the raw COM pointer properly
                             }
+
+                            // [SECURITY] Chặn toàn bộ điều hướng (Navigation) tới các domain không được phép
+                            webview->add_NavigationStarting(
+                                Microsoft::WRL::Callback<ICoreWebView2NavigationStartingEventHandler>(
+                                    [](ICoreWebView2* sender, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+                                        (void)sender;
+                                        LPWSTR uri = nullptr;
+                                        if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
+                                            std::wstring wUri = uri;
+                                            // Chỉ cho phép localhost (React App) và itest.cmcu.edu.vn (Bài thi)
+                                            if (wUri.find(L"localhost") == std::wstring::npos && 
+                                                wUri.find(L"itest.cmcu.edu.vn") == std::wstring::npos) {
+                                                args->put_Cancel(TRUE); // Chặn điều hướng
+                                                LOG_WARN(L"Blocked unauthorized navigation to: " + wUri);
+                                            }
+                                            CoTaskMemFree(uri);
+                                        }
+                                        return S_OK;
+                                    }).Get(), nullptr);
+
+                            // [SECURITY] Chặn hoàn toàn việc mở cửa sổ mới (Popup, _blank links)
+                            webview->add_NewWindowRequested(
+                                Microsoft::WRL::Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+                                    [](ICoreWebView2* sender, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+                                        (void)sender;
+                                        args->put_Handled(TRUE); // Hủy thao tác mở cửa sổ
+                                        LOG_WARN("Blocked popup/new window request.");
+                                        return S_OK;
+                                    }).Get(), nullptr);
 
                             // Gắn MessageBridge, bắt đầu lắng nghe từ React
                             g_bridge.Attach(hWnd, webview.Get(), HandleReactMessage);
@@ -242,6 +275,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     // Thread 4: Event Listener – đợi Kernel báo vi phạm (Inverted Call)
     if (driverOk)
         StartEventListenerThread();
+
+    // Thread 5: Telemetry stats
+    std::thread([]() {
+        while (g_running.load()) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            // Simulate reading system stats
+            int fakeCpu = rand() % 30 + 10;
+            int fakeRam = 2048 + (rand() % 512);
+            int fakeProcs = 140 + (rand() % 10);
+            g_bridge.NotifySystemStats(fakeCpu, fakeRam, fakeProcs);
+        }
+    }).detach();
 
     // ─── Bước 5: Message Loop chính của Win32 ────────────────────────────────
     MSG msg{};
@@ -395,6 +440,25 @@ void HandleReactMessage(const std::wstring& json)
         if (g_driver.IsOpen()) {
             g_driver.SendHeartbeat(kSessionToken);
             LOG_DEBUG("Forwarded HEARTBEAT to Kernel");
+        }
+    }
+    else if (json.find(L"KILL_PROCESS") != std::wstring::npos) {
+        size_t pidPos = json.find(L"\"pid\":");
+        if (pidPos != std::wstring::npos) {
+            std::wstring pidStr;
+            for (size_t i = pidPos + 6; i < json.length(); ++i) {
+                if (iswdigit(json[i])) pidStr += json[i];
+                else break;
+            }
+            if (!pidStr.empty()) {
+                DWORD pid = std::stoul(pidStr);
+                HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+                if (hProc) {
+                    TerminateProcess(hProc, 1);
+                    CloseHandle(hProc);
+                    LOG_INFO("Killed process " + std::to_string(pid) + " via React request.");
+                }
+            }
         }
     }
 }

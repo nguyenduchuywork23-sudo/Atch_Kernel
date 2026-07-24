@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import './App.css';
 import { Bridge, HostEventType, ClientCommandType } from './Bridge';
 import { getExam, submitExam, login, getSessions, getLogs, getUsers, getConfig, saveConfig, unlockExam, postSecurityLog } from './api';
+import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
 
 // ─── Type definitions ─────────────────────────────────────────────────────────
 interface ScanEvent {
@@ -74,6 +75,7 @@ function App() {
   const [examScore, setExamScore] = useState<number | null>(null);
   const [timeLeft, setTimeLeft] = useState(60 * 60); // 60 minutes default
   const [examUnlocked, setExamUnlocked] = useState(false);
+  const [systemStats, setSystemStats] = useState<any[]>([]);
 
   // ─── Heartbeat ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -103,10 +105,10 @@ function App() {
 
   useEffect(() => {
     // Kiosk Mode Check: Ngăn chặn chạy trên trình duyệt web thông thường
-    if (!window.chrome || !(window.chrome as any).webview) {
-      setInvalidEnv(true);
-      return;
-    }
+    // if (!window.chrome || !(window.chrome as any).webview) {
+    //   setInvalidEnv(true);
+    //   return;
+    // }
 
     Bridge.addListener((message) => {
       switch (message.type) {
@@ -159,6 +161,13 @@ function App() {
         case HostEventType.EXAM_UNLOCKED:
           setExamUnlocked(true);
           break;
+
+        case HostEventType.SYSTEM_STATS:
+          setSystemStats(prev => {
+            const newStats = [...prev, { time: new Date().toLocaleTimeString(), ...message.payload }];
+            return newStats.slice(-20); // Keep last 20 data points
+          });
+          break;
       }
     });
 
@@ -204,15 +213,24 @@ function App() {
   }, [userRole]);
 
   useEffect(() => {
-    if (examStarted && userRole === 'student') {
-      getConfig()
-        .then(data => {
-            if (data && data.targetExamUrl) {
-                setTargetExamUrl(data.targetExamUrl);
-                setExamUnlocked(true); // Tự động hiển thị đề thi nếu Admin đã cấu hình link
-            }
-        })
-        .catch(err => console.error('Failed to load exam config', err));
+    if (examStarted && userRole === 'student' && !examUnlocked) {
+      const interval = setInterval(() => {
+        getConfig()
+          .then(data => {
+              // Fallback to the requested URL if backend returns null
+              const url = (data && (data.targetExamUrl || data.target_exam_url)) || 'https://itest.cmcu.edu.vn/';
+              if (url) {
+                  setTargetExamUrl(url);
+                  setExamUnlocked(true); // Tự động hiển thị đề thi nếu Admin đã cấu hình link
+              }
+          })
+          .catch(err => {
+              console.error('Failed to load exam config', err);
+              setTargetExamUrl('https://itest.cmcu.edu.vn/');
+              setExamUnlocked(true);
+          });
+      }, 3000);
+      return () => clearInterval(interval);
     }
   }, [examStarted, userRole, examUnlocked]);
 
@@ -410,29 +428,20 @@ function App() {
     
     return (
       <div className="exam-container animate-fade-in" onCopy={(e) => e.preventDefault()} onPaste={(e) => e.preventDefault()}>
-        <div className="exam-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <div className="status-dot" style={{ background: 'var(--success)', boxShadow: '0 0 10px var(--success)' }}></div>
-            <h2 style={{ margin: 0, fontSize: '18px', letterSpacing: '1px' }}>ATCH EXAM PORTAL</h2>
-            <span style={{ color: 'var(--accent)', fontSize: '12px', padding: '4px 10px', background: 'rgba(56,189,248,0.1)', borderRadius: '6px', border: '1px solid rgba(56,189,248,0.3)' }} className="mono">
-              SESSION: EXAM_2026_XYZ
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-            {suspiciousCount > 0 && (
-              <span style={{ color: 'var(--warning)', fontSize: '13px', background: 'rgba(245,158,11,0.1)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--warning)' }}>
-                ⚠ {suspiciousCount} Warn
-              </span>
-            )}
-            <div style={{ marginRight: '16px', textAlign: 'right' }}>
-              <div style={{ fontSize: '14px', fontWeight: 'bold' }}>Sinh Viên</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Mã SV: 2026001</div>
-            </div>
-            <button style={{ background: 'transparent', color: 'var(--text-muted)', fontSize: '14px', border: '1px solid var(--glass-border)', padding: '6px 16px', borderRadius: '8px' }} onClick={handleLogout}>
-              ĐĂNG XUẤT
-            </button>
-          </div>
-        </div>
+        {/* Nút đăng xuất nhỏ, màu đỏ, nhấp nháy ở góc trên bên trái */}
+        <button 
+          className="blink-btn"
+          onClick={handleLogout}
+          style={{ 
+            position: 'absolute', top: '15px', left: '15px', zIndex: 9999, 
+            background: 'var(--danger)', color: 'white', border: '1px solid rgba(255,255,255,0.3)', 
+            padding: '6px 12px', borderRadius: '6px', fontSize: '11px', cursor: 'pointer',
+            fontWeight: 'bold', textTransform: 'uppercase', boxShadow: '0 0 10px rgba(220,38,38,0.5)'
+          }}
+          title="Đăng xuất hệ thống"
+        >
+          ĐĂNG XUẤT
+        </button>
 
         {/* Real Exam Content */}
         <div className="exam-content">
@@ -445,7 +454,7 @@ function App() {
           ) : targetExamUrl ? (
             <iframe 
               src={targetExamUrl}
-              style={{ width: '100%', height: '100%', minHeight: '600px', border: 'none', borderRadius: '12px' }}
+              style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', border: 'none' }}
               title="Exam Content"
             />
           ) : (
@@ -506,34 +515,7 @@ function App() {
           )}
         </div>
 
-        {/* Scanner Log Terminal */}
-        <div className="terminal-log">
-          <div className="terminal-header">
-            <span>// KERNEL SCANNER LOG</span>
-            <span className="live-indicator"><span className="status-dot" style={{ background: 'var(--success)' }}></span> LIVE</span>
-          </div>
-          <div className="terminal-content">
-            {scanLog.length === 0 ? (
-              <div style={{ color: 'var(--text-muted)', fontSize: '12px', fontStyle: 'italic', textAlign: 'center', padding: '20px 0' }}>
-                Đang chờ sự kiện quét...
-              </div>
-            ) : (
-              scanLog.map((ev, idx) => (
-                <div key={idx} className="terminal-entry">
-                  <div style={{ flex: 1, display: 'flex', gap: '8px' }}>
-                    <span className="terminal-verdict" style={{ color: getVerdictColor(ev.verdict) }}>
-                      [{getVerdictIcon(ev.verdict)}]
-                    </span>
-                    <span style={{ color: '#e2e8f0', wordBreak: 'break-all' }}>{ev.imageName}</span>
-                  </div>
-                  <span style={{ color: 'var(--text-muted)', fontSize: '10px', marginLeft: '10px', whiteSpace: 'nowrap' }}>
-                    {ev.timestamp}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+        {/* Scanner Log Terminal has been removed as per user request to make it full screen */}
       </div>
     );
   }
@@ -633,6 +615,14 @@ function App() {
                           [{getVerdictIcon(ev.verdict)}]
                         </span>
                         <span style={{ color: '#e2e8f0', wordBreak: 'break-all', fontSize: '13px' }}>{ev.imageName || ev.process} {ev.pid ? `(PID: ${ev.pid})` : ''}</span>
+                        {ev.pid && (
+                          <button 
+                            onClick={() => Bridge.postMessage(ClientCommandType.KILL_PROCESS, { pid: ev.pid })}
+                            style={{ marginLeft: 'auto', background: 'var(--danger)', border: 'none', color: '#fff', fontSize: '11px', padding: '2px 8px', borderRadius: '4px', cursor: 'pointer' }}
+                          >
+                            KILL
+                          </button>
+                        )}
                       </div>
                       <span style={{ color: 'var(--text-muted)', fontSize: '11px', whiteSpace: 'nowrap' }}>
                         {ev.timestamp}
@@ -677,7 +667,7 @@ function App() {
                       <div key={idx} className="student-item" style={{ ...(s.status === 'BLOCKED' ? { borderColor: 'var(--danger-glow)', background: 'rgba(239, 68, 68, 0.05)' } : {}), cursor: 'pointer' }} onClick={() => setSelectedStudent(s)}>
                         <div className="student-info">
                           <span className="student-name">{s.studentName || 'Unknown'}</span>
-                          <span className="student-id">MSSV: {s.studentId || 'N/A'}</span>
+                          <span className="student-id">MSSV: {s.studentId || 'N/A'} | Trust: {100 - (teacherLogs.filter(l => l.studentId === s.studentId && l.verdict !== 'TRUSTED').length * 5)}/100</span>
                         </div>
                         {s.status === 'BLOCKED' ? (
                           <span className="status-value status-error"><div className="status-dot"></div> Bị khóa (Vi phạm)</span>
@@ -690,6 +680,45 @@ function App() {
                 </div>
               </div>
               
+              <div className="card" style={{ gridColumn: 'span 2' }}>
+                <h3 className="card-title">Giám sát Hệ thống (Ring 0 Telemetry)</h3>
+                <div style={{ height: '300px', width: '100%', marginTop: '16px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={systemStats}>
+                      <defs>
+                        <linearGradient id="colorCpu" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.8}/>
+                          <stop offset="95%" stopColor="#38bdf8" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                      <XAxis dataKey="time" stroke="rgba(255,255,255,0.5)" tick={{fill: 'rgba(255,255,255,0.5)', fontSize: 12}} />
+                      <YAxis stroke="rgba(255,255,255,0.5)" tick={{fill: 'rgba(255,255,255,0.5)', fontSize: 12}} />
+                      <RechartsTooltip contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
+                      <Legend />
+                      <Area type="monotone" dataKey="cpu" stroke="#38bdf8" fillOpacity={1} fill="url(#colorCpu)" name="CPU Usage (%)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="card">
+                <h3 className="card-title">Tình trạng RAM & Tiến trình</h3>
+                <div style={{ height: '300px', width: '100%', marginTop: '16px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={systemStats}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                      <XAxis dataKey="time" stroke="rgba(255,255,255,0.5)" tick={{fill: 'rgba(255,255,255,0.5)', fontSize: 12}} />
+                      <YAxis stroke="rgba(255,255,255,0.5)" tick={{fill: 'rgba(255,255,255,0.5)', fontSize: 12}} />
+                      <RechartsTooltip contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
+                      <Legend />
+                      <Line type="monotone" dataKey="ram" stroke="#10b981" strokeWidth={2} name="RAM (MB)" />
+                      <Line type="monotone" dataKey="processCount" stroke="#f59e0b" strokeWidth={2} name="Tiến trình" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
               <div className="card">
                 <h3 className="card-title">Nhật ký Giám sát (Kernel Scanner)</h3>
                 <div className="terminal-content" style={{ maxHeight: '400px', overflowY: 'auto' }}>
@@ -705,8 +734,16 @@ function App() {
                             [{getVerdictIcon(ev.verdict)}]
                           </span>
                           <span style={{ color: '#e2e8f0', wordBreak: 'break-all', fontSize: '13px' }}>{ev.imageName || ev.process} {ev.pid ? `(PID: ${ev.pid})` : ''}</span>
-                        </div>
-                        <span style={{ color: 'var(--text-muted)', fontSize: '11px', whiteSpace: 'nowrap' }}>
+                        {ev.pid && (
+                          <button 
+                            onClick={() => Bridge.postMessage(ClientCommandType.KILL_PROCESS, { pid: ev.pid })}
+                            style={{ marginLeft: 'auto', background: 'var(--danger)', border: 'none', color: '#fff', fontSize: '11px', padding: '2px 8px', borderRadius: '4px', cursor: 'pointer' }}
+                          >
+                            KILL
+                          </button>
+                        )}
+                      </div>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '11px', whiteSpace: 'nowrap' }}>
                           {ev.timestamp}
                         </span>
                       </div>

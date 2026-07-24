@@ -24,14 +24,16 @@ export enum HostEventType {
   // [DynamicScanner] Kết quả kiểm duyệt file/tiến trình ở Ring 3
   SCAN_RESULT         = 'SCAN_RESULT',
   EXAM_UNLOCKED       = 'EXAM_UNLOCKED',
+  SYSTEM_STATS        = 'SYSTEM_STATS',
 }
 
 // Các loại Command từ React gửi sang C++ Host (Gửi)
 export enum ClientCommandType {
-  START_EXAM = 'START_EXAM',
-  END_EXAM = 'END_EXAM',
+  START_EXAM     = 'START_EXAM',
+  END_EXAM       = 'END_EXAM',
+  HEARTBEAT      = 'HEARTBEAT',
   REQUEST_UNLOCK = 'REQUEST_UNLOCK',
-  HEARTBEAT = 'HEARTBEAT',
+  KILL_PROCESS   = 'KILL_PROCESS'
 }
 
 interface MessageData {
