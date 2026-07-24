@@ -15,6 +15,8 @@
 struct ICoreWebView2;
 struct ICoreWebView2Controller;
 
+#define WM_POST_TO_REACT (WM_APP + 1)
+
 // Callback khi nhận được JSON từ React gửi sang
 using BridgeMessageCallback = std::function<void(const std::wstring& jsonMessage)>;
 
@@ -23,10 +25,13 @@ public:
     MessageBridge() = default;
 
     // Cài đặt WebView2 controller để có thể gửi/nhận message
-    void Attach(ICoreWebView2* webview, BridgeMessageCallback onMessage);
+    void Attach(HWND hwnd, ICoreWebView2* webview, BridgeMessageCallback onMessage);
 
-    // Gửi JSON từ C++ → React
+    // Gửi JSON từ C++ → React (Thread-safe)
     void PostToReact(const std::wstring& jsonPayload);
+
+    // Thực thi gọi WebView2 trực tiếp (phải gọi trên UI Thread)
+    void ExecutePostToReact(const std::wstring& jsonPayload);
 
     // ── Các hàm helper tạo sẵn JSON payload thông dụng ──────────────────────
     // Gửi thông báo driver đã kết nối
@@ -40,7 +45,8 @@ public:
     void NotifyIntegrityFail(const std::wstring& reason);
 
 private:
-    ICoreWebView2* m_webview{ nullptr };
+    HWND m_hwnd{ nullptr };
+    Microsoft::WRL::ComPtr<ICoreWebView2> m_webview;
 };
 
 #endif // MESSAGE_BRIDGE_H

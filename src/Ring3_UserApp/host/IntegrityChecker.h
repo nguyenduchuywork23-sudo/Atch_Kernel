@@ -32,9 +32,15 @@ public:
 
     // --- Các hàm kiểm tra đơn lẻ (cũng có thể gọi thủ công) ---
     bool IsDebuggerAttached();
+    bool IsAdvancedDebuggerAttached(); // Timing, Exception, CheckRemote
     bool IsHardwareBreakpointSet();
     bool HasUnknownModulesInjected();
     bool IsParentProcessLegitimate();
+    bool IsBlacklistedToolRunning();
+    bool IsBlacklistedWindowVisible();
+    bool IsRemoteSessionActive();
+    bool IsRunningInVirtualMachine();
+    void ErasePEHeader();
 
     // Tính toán & lưu CRC của .text section của chính tiến trình này
     void ComputeInitialChecksum();

@@ -1,11 +1,19 @@
 // MessageBridge.cpp
 // [Ring 3 ONLY] Triển khai JSON bridge C++ <-> React.
 #include "MessageBridge.h"
+#include "Logger.h"
 #include <WebView2.h>    // WebView2 SDK header (cần cài qua NuGet/CMake)
 #include <sstream>
 
-void MessageBridge::Attach(ICoreWebView2* webview, BridgeMessageCallback onMessage)
+void MessageBridge::Attach(HWND hwnd, ICoreWebView2* webview, BridgeMessageCallback onMessage)
 {
+    if (!webview) {
+        LOG_ERR("MessageBridge: Invalid webview pointer passed to Attach.");
+        return;
+    }
+
+    LOG_INFO("MessageBridge: Attaching to WebView2...");
+    m_hwnd = hwnd;
     m_webview = webview;
     if (!m_webview) return;
 
@@ -18,8 +26,10 @@ void MessageBridge::Attach(ICoreWebView2* webview, BridgeMessageCallback onMessa
             {
                 LPWSTR rawJson = nullptr;
                 args->get_WebMessageAsJson(&rawJson);
-                if (rawJson && cb)
+                if (rawJson && cb) {
+                    LOG_DEBUG(L"MessageBridge: Received message from React");
                     cb(std::wstring(rawJson));
+                }
                 CoTaskMemFree(rawJson);
                 return S_OK;
             })
@@ -28,8 +38,18 @@ void MessageBridge::Attach(ICoreWebView2* webview, BridgeMessageCallback onMessa
 
 void MessageBridge::PostToReact(const std::wstring& jsonPayload)
 {
-    if (m_webview)
+    if (m_webview && m_hwnd) {
+        auto* payload = new std::wstring(jsonPayload);
+        PostMessageW(m_hwnd, WM_POST_TO_REACT, 0, reinterpret_cast<LPARAM>(payload));
+    }
+}
+
+void MessageBridge::ExecutePostToReact(const std::wstring& jsonPayload)
+{
+    if (m_webview) {
+        LOG_DEBUG(L"MessageBridge: Posting to React -> " + jsonPayload);
         m_webview->PostWebMessageAsJson(jsonPayload.c_str());
+    }
 }
 
 // ── Helper builders ─────────────────────────────────────────────────────────

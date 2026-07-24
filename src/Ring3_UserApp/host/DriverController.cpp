@@ -1,7 +1,11 @@
 // DriverController.cpp
 // [Ring 3 ONLY] Triển khai giao tiếp với Ring0_CoreDriver qua DeviceIoControl.
 #include "DriverController.h"
-#include <cstring>
+#include "Logger.h"
+#include <windows.h>
+#include <iostream>
+#include <vector>
+#include <string>
 
 DriverController::DriverController() = default;
 
@@ -19,16 +23,17 @@ bool DriverController::Open()
     m_hDevice = CreateFileW(
         kDeviceName,
         GENERIC_READ | GENERIC_WRITE,
-        0,                      // Không chia sẻ
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,                // Security attributes mặc định
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
         nullptr);
 
     if (m_hDevice == INVALID_HANDLE_VALUE) {
-        // Không kết nối được → driver chưa load hoặc chưa ký
+        LOG_ERR("DriverController: Failed to open handle to AtchKernel.");
         return false;
     }
+    LOG_INFO("DriverController: Successfully opened handle to AtchKernel.");
     return true;
 }
 
@@ -57,6 +62,12 @@ bool DriverController::Ioctl(DWORD ctlCode,
         outBuf, outSize,
         &dwReturned,
         nullptr);  // Synchronous call (không dùng OVERLAPPED)
+
+    if (ok == FALSE) {
+        LOG_ERR("DriverController: IOCTL " + std::to_string(ctlCode) + " failed with error " + std::to_string(GetLastError()));
+    } else {
+        LOG_DEBUG("DriverController: IOCTL " + std::to_string(ctlCode) + " succeeded.");
+    }
 
     if (bytesReturned)
         *bytesReturned = dwReturned;

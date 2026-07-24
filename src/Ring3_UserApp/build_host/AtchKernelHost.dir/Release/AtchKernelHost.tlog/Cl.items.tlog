@@ -4,3 +4,4 @@ C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\HeartbeatManager.cpp;C:\Users\A
 C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\IntegrityChecker.cpp;C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\build_host\AtchKernelHost.dir\Release\IntegrityChecker.obj
 C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\MessageBridge.cpp;C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\build_host\AtchKernelHost.dir\Release\MessageBridge.obj
 C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\DynamicScanner.cpp;C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\build_host\AtchKernelHost.dir\Release\DynamicScanner.obj
+C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\Logger.cpp;C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\build_host\AtchKernelHost.dir\Release\Logger.obj

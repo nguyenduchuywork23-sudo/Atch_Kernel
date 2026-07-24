@@ -19,6 +19,9 @@
     <ClCompile Include="C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\DynamicScanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\Logger.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\CMakeLists.txt" />

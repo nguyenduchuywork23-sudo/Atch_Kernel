@@ -23,6 +23,7 @@ export enum HostEventType {
   INTEGRITY_FAIL      = 'INTEGRITY_FAIL',
   // [DynamicScanner] Kết quả kiểm duyệt file/tiến trình ở Ring 3
   SCAN_RESULT         = 'SCAN_RESULT',
+  EXAM_UNLOCKED       = 'EXAM_UNLOCKED',
 }
 
 // Các loại Command từ React gửi sang C++ Host (Gửi)
@@ -30,6 +31,7 @@ export enum ClientCommandType {
   START_EXAM = 'START_EXAM',
   END_EXAM = 'END_EXAM',
   REQUEST_UNLOCK = 'REQUEST_UNLOCK',
+  HEARTBEAT = 'HEARTBEAT',
 }
 
 interface MessageData {

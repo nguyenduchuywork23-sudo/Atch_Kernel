@@ -18,6 +18,7 @@
 #include "IntegrityChecker.h"
 #include "MessageBridge.h"
 #include "DynamicScanner.h"
+#include "Logger.h"
 
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "ole32.lib")
@@ -37,6 +38,7 @@ static DriverController  g_driver;
 static MessageBridge     g_bridge;
 static std::atomic<bool> g_running{ true };
 static DynamicScanner*   g_scanner{ nullptr };
+static Microsoft::WRL::ComPtr<ICoreWebView2Controller> g_webviewController;
 
 // ─── Kiosk Mode Hook ──────────────────────────────────────────────────────────
 static HHOOK g_kbdHook = nullptr;
@@ -60,6 +62,11 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             block = true;
         }
         
+        // [DEV ONLY] Ctrl + Q để thoát khẩn cấp khi bị treo
+        if (p->vkCode == 'Q' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+            PostQuitMessage(0);
+        }
+
         if (block) return 1; // Ngăn chặn sự kiện phím
     }
     return CallNextHookEx(g_kbdHook, nCode, wParam, lParam);
@@ -72,7 +79,14 @@ void OnIntegrityFail(const std::wstring& reason);
 void OnHeartbeatFail();
 void StartEventListenerThread();
 void HandleReactMessage(const std::wstring& json);
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 
+#include <stdio.h>
+
+int main() {
+    printf("Main started!\n");
+    return WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOW);
+}
 // ─── Điểm vào ─────────────────────────────────────────────────────────────────
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
@@ -86,20 +100,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) return 1;
 
+    // Khởi tạo Logger
+    Logger::GetInstance().Init(L"AtchKernelHost.log");
+    LOG_INFO("AtchKernelHost is starting...");
     // ─── Bước 1: Kết nối với Kernel Driver ────────────────────────────────────
     bool driverOk = g_driver.Open();
     if (driverOk) {
-        // Khởi tạo phiên thi trong Kernel
-        g_driver.InitializeExam(
-            GetCurrentProcessId(),
-            0x01,           // SecurityLevelFlags = Mức bảo mật cơ bản
-            kSessionToken);
-
-        // Whitelist chính PID của ứng dụng này
+        LOG_INFO("Connected to Atch Kernel Driver successfully.");
+        g_driver.InitializeExam(GetCurrentProcessId(), 0x01, kSessionToken);
         g_driver.AddWhitelistPid(kSessionToken, GetCurrentProcessId());
+        LOG_INFO("Exam session initialized in Kernel.");
+    } else {
+        LOG_WARN("Failed to connect to Atch Kernel Driver. Operating in UI-only mode.");
     }
-    // Nếu driver không kết nối, ứng dụng vẫn chạy nhưng sẽ báo lỗi qua UI
-
+    
+    LOG_INFO("Reaching Step 2...");
     // ─── Bước 2: Tạo cửa sổ Win32 Borderless ─────────────────────────────────
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
@@ -108,15 +123,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     wc.lpszClassName = L"AtchKernelHost";
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     wc.hIcon         = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    
+    LOG_INFO("Registering class...");
     RegisterClassExW(&wc);
 
-    // Lấy kích thước toàn màn hình
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
 
-    // WS_POPUP | WS_VISIBLE → Cửa sổ không viền, toàn màn hình
+    LOG_INFO("Calling CreateWindowExW...");
     HWND hWnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
+        WS_EX_TOPMOST,
         L"AtchKernelHost",
         L"Atch Kernel — Secure Exam Browser",
         WS_POPUP | WS_VISIBLE,
@@ -124,16 +141,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInstance, nullptr);
 
     if (!hWnd) {
+        LOG_ERR("CreateWindowExW failed. Error: " + std::to_string(GetLastError()));
         CoUninitialize();
         return 1;
     }
 
+    LOG_INFO("Setting Keyboard Hook...");
     // [SECURITY] Khóa phím hệ thống (Alt+Tab, WinKey) để làm Kiosk Mode
     g_kbdHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
 
+    LOG_INFO("Calling ShowWindow...");
     ShowWindow(hWnd, SW_SHOW);
     UpdateWindow(hWnd);
 
+    LOG_INFO("Reaching Step 3 (WebView2)...");
     // ─── Bước 3: Khởi tạo WebView2 (async) ──────────────────────────────────
     CreateCoreWebView2EnvironmentWithOptions(
         nullptr, nullptr, nullptr,
@@ -149,12 +170,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                         {
                             if (FAILED(result) || !ctrl) return result;
 
+                            g_webviewController = ctrl;
+
                             // Cấu hình kích thước WebView2 phủ toàn cửa sổ
                             RECT bounds{};
                             GetClientRect(hWnd, &bounds);
                             ctrl->put_Bounds(bounds);
 
-                            ICoreWebView2* webview = nullptr;
+                            Microsoft::WRL::ComPtr<ICoreWebView2> webview;
                             ctrl->get_CoreWebView2(&webview);
 
                             // [SECURITY] Vô hiệu hóa DevTools, chuột phải trong WebView
@@ -165,17 +188,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                                 settings->put_AreDefaultContextMenusEnabled(FALSE);
                                 settings->put_IsStatusBarEnabled(FALSE);
                                 settings->put_IsScriptEnabled(TRUE); // Script phải bật
+                                settings->Release(); // Release the raw COM pointer properly
                             }
 
                             // Gắn MessageBridge, bắt đầu lắng nghe từ React
-                            g_bridge.Attach(webview, HandleReactMessage);
+                            g_bridge.Attach(hWnd, webview.Get(), HandleReactMessage);
 
                             // Load React App
+                            LOG_INFO("Loading WebView2 URL...");
                             webview->Navigate(kWebViewUrl);
 
                             // Báo cho React biết driver đã sẵn sàng
                             // (delay nhỏ để React render xong trước)
-                            std::thread([webview]() {
+                            std::thread([]() {
                                 std::this_thread::sleep_for(std::chrono::seconds(1));
                                 // Nếu driver kết nối được → báo READY, nếu không → báo LOST
                                 if (g_driver.IsOpen())
@@ -191,6 +216,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             })
         .Get());
 
+    LOG_INFO("Reaching Step 4 (Security Threads)...");
     // ─── Bước 4: Khởi động các Security Thread ────────────────────────────────
 
     // Thread 1: IntegrityChecker – tự bảo vệ ứng dụng liên tục
@@ -219,12 +245,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
     // ─── Bước 5: Message Loop chính của Win32 ────────────────────────────────
     MSG msg{};
-    while (g_running.load() && GetMessageW(&msg, nullptr, 0, 0)) {
+    BOOL bRet = 0;
+    LOG_INFO("Entering message loop...");
+    while (g_running.load() && (bRet = GetMessageW(&msg, nullptr, 0, 0)) != 0) {
+        if (bRet == -1) {
+            LOG_ERR("GetMessageW returned -1!");
+            break;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 
+    LOG_INFO("Message loop exited. bRet=" + std::to_string(bRet) + ", g_running=" + std::to_string((int)g_running.load()));
+
     // ─── Dọn dẹp ──────────────────────────────────────────────────────────────
+    LOG_INFO("Shutting down AtchKernelHost...");
     scanner.Stop();
     g_scanner = nullptr;
     if (heartbeat) heartbeat->Stop();
@@ -233,16 +268,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     if (driverOk) {
         g_driver.TerminateExam(kSessionToken);
         g_driver.Close();
+        LOG_INFO("Terminated exam session and closed driver.");
     }
 
     if (g_kbdHook) UnhookWindowsHookEx(g_kbdHook);
     CoUninitialize();
+    LOG_INFO("Shutdown complete.");
     return 0;
 }
 
 // ─── Window Procedure ─────────────────────────────────────────────────────────
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Cảnh báo: Log quá nhiều có thể gây chậm, nhưng cần để debug
+    if (msg == WM_CREATE) LOG_INFO("WndProc: WM_CREATE");
+    if (msg == WM_NCCREATE) LOG_INFO("WndProc: WM_NCCREATE");
+    if (msg == WM_SIZE) LOG_INFO("WndProc: WM_SIZE");
+
     switch (msg) {
     // [SECURITY] Chặn Alt+F4, Alt+Tab ở mức cửa sổ Win32
     case WM_SYSCOMMAND:
@@ -252,10 +294,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     // Resize WebView2 theo cửa sổ khi thay đổi kích thước
     case WM_SIZE:
-        // TODO: Resize webview controller bounds ở đây nếu cần
+        if (g_webviewController) {
+            RECT bounds{};
+            GetClientRect(hWnd, &bounds);
+            g_webviewController->put_Bounds(bounds);
+        }
+        break;
+
+    case WM_POST_TO_REACT: {
+        auto* payload = reinterpret_cast<std::wstring*>(lParam);
+        if (payload) {
+            g_bridge.ExecutePostToReact(*payload);
+            delete payload;
+        }
+        return 0;
+    }
+
+    case WM_CLOSE:
+        LOG_INFO("WndProc: WM_CLOSE received");
         break;
 
     case WM_DESTROY:
+        LOG_INFO("WndProc: WM_DESTROY received");
         g_running = false;
         PostQuitMessage(0);
         break;
@@ -266,6 +326,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // ─── Xử lý sự kiện vi phạm từ Kernel ─────────────────────────────────────────
 void OnKernelViolation(const MONITOR_LOG_ENTRY& entry)
 {
+    LOG_WARN("Received violation from Kernel Driver.");
     g_bridge.NotifyViolation(
         entry.ConfiscatedProcessId,
         entry.ImagePath,
@@ -275,6 +336,7 @@ void OnKernelViolation(const MONITOR_LOG_ENTRY& entry)
 // ─── Xử lý vi phạm toàn vẹn Ring 3 ───────────────────────────────────────────
 void OnIntegrityFail(const std::wstring& reason)
 {
+    LOG_ERR(L"Integrity Checker Failed: " + reason);
     // Báo cho React UI biết lỗi gì
     g_bridge.NotifyIntegrityFail(reason);
     
@@ -288,6 +350,7 @@ void OnIntegrityFail(const std::wstring& reason)
 // ─── Heartbeat thất bại ────────────────────────────────────────────────────────
 void OnHeartbeatFail()
 {
+    LOG_ERR("Heartbeat Manager reported failure (driver lost).");
     g_bridge.NotifyDriverLost();
     g_running = false;
     PostQuitMessage(0);
@@ -327,5 +390,11 @@ void HandleReactMessage(const std::wstring& json)
     else if (json.find(L"REQUEST_UNLOCK") != std::wstring::npos) {
         if (g_driver.IsOpen())
             g_driver.UnlockExam(kSessionToken);
+    }
+    else if (json.find(L"HEARTBEAT") != std::wstring::npos) {
+        if (g_driver.IsOpen()) {
+            g_driver.SendHeartbeat(kSessionToken);
+            LOG_DEBUG("Forwarded HEARTBEAT to Kernel");
+        }
     }
 }

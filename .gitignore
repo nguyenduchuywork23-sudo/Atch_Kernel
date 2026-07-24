@@ -1,0 +1,10 @@
+build/
+build_host/
+node_modules/
+target/
+*.exe
+*.sys
+*.obj
+*.log
+*.txt
+.vscode/

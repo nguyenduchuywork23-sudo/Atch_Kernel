@@ -12,10 +12,13 @@ set(HOST_SOURCES
     IntegrityChecker.cpp
     MessageBridge.cpp
     DynamicScanner.cpp
+    Logger.cpp
 )
 
 # ── Tạo file thực thi Windows GUI (không có console đen) ─────────────────────
 add_executable(AtchKernelHost WIN32 ${HOST_SOURCES})
+
+
 
 # ── Include: SharedDef.h (dùng chung với Ring 0, KHÔNG SỬA file này) ─────────
 target_include_directories(AtchKernelHost PRIVATE
@@ -61,15 +64,11 @@ if(MSVC)
     target_compile_options(AtchKernelHost PRIVATE
         "/W4"               # Warning level 4
         "/WX"               # Treat warnings as errors
-        "/guard:cf"         # Control Flow Guard
-        "/sdl"              # Security Development Lifecycle checks
     )
     target_link_options(AtchKernelHost PRIVATE
-        /GUARD:CF           # CFG in linker
         /NXCOMPAT           # Data Execution Prevention
         /DYNAMICBASE        # ASLR
-        /CETCOMPAT          # Shadow stack (Intel CET)
-        /SUBSYSTEM:WINDOWS  # GUI application, no console
+        /SUBSYSTEM:WINDOWS  # GUI App
     )
 endif()
 

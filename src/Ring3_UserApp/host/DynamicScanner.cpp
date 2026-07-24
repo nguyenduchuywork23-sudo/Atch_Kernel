@@ -5,11 +5,16 @@
 // Ring 0 chỉ hành động THEO QUYẾT ĐỊNH của Ring 3."
 #define NOMINMAX
 #include "DynamicScanner.h"
+#include "Logger.h"
+#include <windows.h>
+#include <tlhelp32.h>
+#include <wintrust.h>
+#include <softpub.h>
+#include <array>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
 #include <cctype>
-#include <array>
 
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -71,12 +76,19 @@ std::vector<ProcessRecord> DynamicScanner::GetScanHistory() const
 
 void DynamicScanner::Start(DWORD intervalMs)
 {
+    LOG_INFO("DynamicScanner: Starting up...");
+
     m_running = true;
-    m_thread  = std::thread([this, intervalMs]() { RunScanLoop(intervalMs); });
+    m_thread = std::thread([this, intervalMs]() {
+        LOG_INFO("DynamicScanner: Thread started.");
+        RunScanLoop(intervalMs);
+        LOG_INFO("DynamicScanner: Thread stopped.");
+    });
 }
 
 void DynamicScanner::Stop()
 {
+    LOG_INFO("DynamicScanner: Stop requested.");
     m_running = false;
     if (m_thread.joinable())
         m_thread.join();
@@ -115,6 +127,8 @@ void DynamicScanner::RunScanLoop(DWORD intervalMs)
             }
 
             // ─── [RING 3 VERDICT] Phân tích file ───────────────────────────────
+            LOG_INFO(L"DynamicScanner: New process detected [PID: " + std::to_wstring(pid) + L"] " + lowerName);
+
             std::string  sha256Hex;
             bool         signedOk = false;
             ScanVerdict  verdict  = ScanVerdict::UNKNOWN;
@@ -153,7 +167,11 @@ void DynamicScanner::RunScanLoop(DWORD intervalMs)
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+        // Chờ đến chu kỳ quét tiếp theo (kiểm tra m_running mỗi 100ms để thoát nhanh)
+        for (DWORD i = 0; i < intervalMs; i += 100) {
+            if (!m_running.load()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
     }
 }
 
@@ -401,20 +419,25 @@ void DynamicScanner::RouteVerdictToRing0(const ProcessRecord& rec)
 // ─── Lấy đường dẫn đầy đủ của tiến trình ─────────────────────────────────────
 std::wstring DynamicScanner::GetProcessImagePath(DWORD pid)
 {
-    HANDLE hProc = OpenProcess(
-        PROCESS_QUERY_LIMITED_INFORMATION,
-        FALSE,
-        pid);
-    if (!hProc) return {};
+    // Mở tiến trình để lấy đường dẫn thực thi
+    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!hProc) {
+        LOG_WARN("DynamicScanner: Could not open handle for new process " + std::to_string(pid));
+        return L""; 
+    }
 
-    WCHAR buf[MAX_PATH]{};
+    WCHAR imagePath[MAX_PATH]{};
     DWORD size = MAX_PATH;
-    std::wstring result;
-    if (QueryFullProcessImageNameW(hProc, 0, buf, &size))
-        result = std::wstring(buf, size);
-
+    if (!QueryFullProcessImageNameW(hProc, 0, imagePath, &size)) {
+        LOG_WARN("DynamicScanner: Could not query image name for " + std::to_string(pid));
+        CloseHandle(hProc);
+        return L"";
+    }
     CloseHandle(hProc);
-    return result;
+
+    std::wstring fullPath(imagePath);
+    LOG_DEBUG(L"DynamicScanner: Analyzing " + std::to_wstring(pid) + L" -> " + fullPath);
+    return fullPath;
 }
 
 // ─── Lấy tên file từ đường dẫn ────────────────────────────────────────────────

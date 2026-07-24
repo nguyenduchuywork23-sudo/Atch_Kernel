@@ -91,7 +91,6 @@
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <BufferSecurityCheck></BufferSecurityCheck>
       <CallingConvention></CallingConvention>
-      <ControlFlowGuard>Guard</ControlFlowGuard>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <ExceptionHandling>Sync</ExceptionHandling>
       <FloatingPointModel></FloatingPointModel>
@@ -103,7 +102,6 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
-      <SDLCheck>true</SDLCheck>
       <SupportJustMyCode></SupportJustMyCode>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -140,8 +138,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <Link>
       <AdditionalDependencies>C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\packages\Microsoft.Web.WebView2\build\native\x64\WebView2LoaderStatic.lib;user32.lib;gdi32.lib;ole32.lib;oleaut32.lib;shlwapi.lib;psapi.lib;ntdll.lib;shell32.lib;wintrust.lib;crypt32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /GUARD:CF</AdditionalOptions>
-      <CETCompat>true</CETCompat>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
@@ -163,7 +160,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <BufferSecurityCheck></BufferSecurityCheck>
       <CallingConvention></CallingConvention>
-      <ControlFlowGuard>Guard</ControlFlowGuard>
       <ExceptionHandling>Sync</ExceptionHandling>
       <FloatingPointModel></FloatingPointModel>
       <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
@@ -174,7 +170,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
-      <SDLCheck>true</SDLCheck>
       <SupportJustMyCode></SupportJustMyCode>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -213,8 +208,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <Link>
       <AdditionalDependencies>C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\packages\Microsoft.Web.WebView2\build\native\x64\WebView2LoaderStatic.lib;user32.lib;gdi32.lib;ole32.lib;oleaut32.lib;shlwapi.lib;psapi.lib;ntdll.lib;shell32.lib;wintrust.lib;crypt32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /GUARD:CF</AdditionalOptions>
-      <CETCompat>true</CETCompat>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
@@ -236,7 +230,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <BufferSecurityCheck></BufferSecurityCheck>
       <CallingConvention></CallingConvention>
-      <ControlFlowGuard>Guard</ControlFlowGuard>
       <ExceptionHandling>Sync</ExceptionHandling>
       <FloatingPointModel></FloatingPointModel>
       <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
@@ -247,7 +240,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
-      <SDLCheck>true</SDLCheck>
       <SupportJustMyCode></SupportJustMyCode>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -286,8 +278,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <Link>
       <AdditionalDependencies>C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\packages\Microsoft.Web.WebView2\build\native\x64\WebView2LoaderStatic.lib;user32.lib;gdi32.lib;ole32.lib;oleaut32.lib;shlwapi.lib;psapi.lib;ntdll.lib;shell32.lib;wintrust.lib;crypt32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /GUARD:CF</AdditionalOptions>
-      <CETCompat>true</CETCompat>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
@@ -309,7 +300,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <BufferSecurityCheck></BufferSecurityCheck>
       <CallingConvention></CallingConvention>
-      <ControlFlowGuard>Guard</ControlFlowGuard>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <ExceptionHandling>Sync</ExceptionHandling>
       <FloatingPointModel></FloatingPointModel>
@@ -321,7 +311,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
-      <SDLCheck>true</SDLCheck>
       <SupportJustMyCode></SupportJustMyCode>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -358,8 +347,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <Link>
       <AdditionalDependencies>C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\packages\Microsoft.Web.WebView2\build\native\x64\WebView2LoaderStatic.lib;user32.lib;gdi32.lib;ole32.lib;oleaut32.lib;shlwapi.lib;psapi.lib;ntdll.lib;shell32.lib;wintrust.lib;crypt32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /GUARD:CF</AdditionalOptions>
-      <CETCompat>true</CETCompat>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
@@ -438,6 +426,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\IntegrityChecker.cpp" />
     <ClCompile Include="C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\MessageBridge.cpp" />
     <ClCompile Include="C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\DynamicScanner.cpp" />
+    <ClCompile Include="C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp\host\Logger.cpp" />
   </ItemGroup>
   <ItemGroup />
   <ItemGroup>
