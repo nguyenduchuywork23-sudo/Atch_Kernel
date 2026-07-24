@@ -1,0 +1,10 @@
+^C:\USERS\ASUS\ATCH_KERNEL\SRC\RING3_USERAPP\BUILD_HOST\CMAKEFILES\6C82E4B5B9D348323A3CF004240A2BA1\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/Asus/Atch_Kernel/src/Ring3_UserApp/host -BC:/Users/Asus/Atch_Kernel/src/Ring3_UserApp/build_host --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/Asus/Atch_Kernel/src/Ring3_UserApp/build_host/AtchKernelHost.slnx
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

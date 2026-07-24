@@ -1,0 +1,3 @@
+C:/Users/Asus/Atch_Kernel/src/Ring3_UserApp/build_host/CMakeFiles/AtchKernelHost.dir
+C:/Users/Asus/Atch_Kernel/src/Ring3_UserApp/build_host/CMakeFiles/ALL_BUILD.dir
+C:/Users/Asus/Atch_Kernel/src/Ring3_UserApp/build_host/CMakeFiles/ZERO_CHECK.dir
