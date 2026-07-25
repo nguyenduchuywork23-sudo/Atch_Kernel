@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <unordered_set>
 #include <atomic>
 #include <thread>
@@ -114,10 +115,11 @@ private:
     std::thread         m_thread;
     mutable std::mutex  m_mutex;
 
-    // Tập hợp PID đã kiểm tra trong phiên hiện tại (tránh quét lặp)
-    std::unordered_set<DWORD>    m_scannedPids;
     // Lịch sử đầy đủ để UI hiển thị
     std::vector<ProcessRecord>   m_history;
+
+    // Cache danh sách tiến trình đã quét kèm thời gian tạo (Chống TOCTOU)
+    std::map<DWORD, FILETIME> m_scannedPids;
 
     // Tên tiến trình hợp lệ được bỏ qua (hệ điều hành Windows, v.v.)
     std::unordered_set<std::wstring> m_trustedNames;

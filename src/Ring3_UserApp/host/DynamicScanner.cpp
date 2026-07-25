@@ -110,10 +110,23 @@ void DynamicScanner::RunScanLoop(DWORD intervalMs)
         for (auto& pe : processes) {
             DWORD pid = pe.th32ProcessID;
 
+            FILETIME ftCreation{};
+            HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (hProc) {
+                FILETIME ftExit, ftKernel, ftUser;
+                GetProcessTimes(hProc, &ftCreation, &ftExit, &ftKernel, &ftUser);
+                CloseHandle(hProc);
+            }
+
             {
                 std::lock_guard<std::mutex> lk(m_mutex);
-                // Bỏ qua nếu đã kiểm tra PID này trong phiên
-                if (m_scannedPids.count(pid)) continue;
+                auto it = m_scannedPids.find(pid);
+                if (it != m_scannedPids.end()) {
+                    if (it->second.dwLowDateTime == ftCreation.dwLowDateTime &&
+                        it->second.dwHighDateTime == ftCreation.dwHighDateTime) {
+                        continue; // PID and creation time match, skip
+                    }
+                }
             }
 
             // Lấy đường dẫn đầy đủ
@@ -128,8 +141,11 @@ void DynamicScanner::RunScanLoop(DWORD intervalMs)
                 std::lock_guard<std::mutex> lk(m_mutex);
                 // Bỏ qua tiến trình hệ thống đã biết
                 if (m_trustedNames.count(lowerName)) {
-                    m_scannedPids.insert(pid);
-                    continue;
+                    std::wstring lowerPath = imagePath;
+                    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
+                    if (lowerPath.find(L"c:\\windows\\system32\\") == 0 || lowerPath.find(L"c:\\windows\\syswow64\\") == 0) {
+                        continue;
+                    }
                 }
             }
 
@@ -169,7 +185,7 @@ void DynamicScanner::RunScanLoop(DWORD intervalMs)
 
             {
                 std::lock_guard<std::mutex> lk(m_mutex);
-                m_scannedPids.insert(pid);
+                m_scannedPids[pid] = ftCreation;
                 m_history.push_back(rec);
             }
         }

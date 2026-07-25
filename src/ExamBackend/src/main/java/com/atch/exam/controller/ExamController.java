@@ -27,7 +27,10 @@ public class ExamController {
         }
 
         org.springframework.security.core.Authentication auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && session.getUser() != null) {
+        if (session.getUser() == null) {
+            throw new org.springframework.security.access.AccessDeniedException("Session has no associated user.");
+        }
+        if (auth != null) {
             if (!auth.getName().equals(session.getUser().getUsername())) {
                 return ResponseEntity.status(403).body("Forbidden: You cannot submit someone else's exam.");
             }

@@ -81,7 +81,7 @@ bool DriverController::InitializeExam(ULONG clientPid,
                                        const WCHAR* sessionToken)
 {
     EXAM_INIT_DATA data{};
-    data.ClientProcessId    = clientPid;
+    data.ClientProcessId_RESERVED = clientPid;
     data.SecurityLevelFlags = securityFlags;
     if (sessionToken)
         wcsncpy_s(data.SessionToken, sessionToken, 63);

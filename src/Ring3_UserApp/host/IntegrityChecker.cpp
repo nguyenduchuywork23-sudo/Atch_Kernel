@@ -138,6 +138,18 @@ void IntegrityChecker::RunChecks()
         m_callback(L"INTEGRITY_FAIL: Remote Desktop session active");
         return;
     }
+
+    // [CHECK 10] Clipboard Protection (Anti-Copy-Paste)
+    if (OpenClipboard(nullptr)) {
+        EmptyClipboard();
+        CloseClipboard();
+    }
+
+    // [CHECK 11] Multi-Monitor (Anti-Second-Screen)
+    if (GetSystemMetrics(SM_CMONITORS) > 1) {
+        m_callback(L"INTEGRITY_FAIL: Multiple monitors detected. Please disconnect external screens.");
+        return;
+    }
 }
 
 // ─── [CHECK 1] Kiểm tra Debugger ──────────────────────────────────────────
@@ -223,14 +235,34 @@ bool IntegrityChecker::IsAdvancedDebuggerAttached()
 // ─── [CHECK 2] Kiểm tra Hardware Breakpoint ───────────────────────────────
 bool IntegrityChecker::IsHardwareBreakpointSet()
 {
-    CONTEXT ctx{};
-    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-    if (GetThreadContext(GetCurrentThread(), &ctx)) {
-        // DR0-DR3: địa chỉ breakpoint phần cứng. Nếu != 0 thì đang bị theo dõi.
-        if (ctx.Dr0 || ctx.Dr1 || ctx.Dr2 || ctx.Dr3)
-            return true;
+    DWORD currentPid = GetCurrentProcessId();
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return false;
+
+    THREADENTRY32 te32{};
+    te32.dwSize = sizeof(te32);
+    bool found = false;
+
+    if (Thread32First(hSnap, &te32)) {
+        do {
+            if (te32.th32OwnerProcessID == currentPid) {
+                HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te32.th32ThreadID);
+                if (hThread) {
+                    CONTEXT ctx{};
+                    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                    if (GetThreadContext(hThread, &ctx)) {
+                        if (ctx.Dr0 || ctx.Dr1 || ctx.Dr2 || ctx.Dr3) {
+                            found = true;
+                        }
+                    }
+                    CloseHandle(hThread);
+                }
+            }
+            if (found) break;
+        } while (Thread32Next(hSnap, &te32));
     }
-    return false;
+    CloseHandle(hSnap);
+    return found;
 }
 
 // ─── [CHECK 3] Phát hiện DLL Injection ────────────────────────────────────
@@ -427,6 +459,22 @@ bool IntegrityChecker::IsRunningInVirtualMachine()
         return true; // Đang chạy trong môi trường ảo hóa (VMware, VirtualBox, Hyper-V, v.v.)
     }
     
+    // Kiểm tra các Artifacts của máy ảo phổ biến
+    const wchar_t* vmFiles[] = {
+        L"C:\\Windows\\System32\\drivers\\VBoxMouse.sys",
+        L"C:\\Windows\\System32\\drivers\\VBoxGuest.sys",
+        L"C:\\Windows\\System32\\drivers\\vboxvideo.sys",
+        L"C:\\Windows\\System32\\vmtoolsd.exe",
+        L"C:\\Windows\\System32\\drivers\\vmmouse.sys",
+        L"C:\\Windows\\System32\\drivers\\vmhgfs.sys"
+    };
+
+    for (const auto& file : vmFiles) {
+        if (GetFileAttributesW(file) != INVALID_FILE_ATTRIBUTES) {
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -459,7 +507,7 @@ void IntegrityChecker::ErasePEHeader()
     // Thay đổi quyền bảo vệ bộ nhớ thành PAGE_READWRITE để có thể xóa
     if (VirtualProtect(hModule, headerSize, PAGE_READWRITE, &oldProtect)) {
         // Ghi đè toàn bộ header bằng số 0
-        SecureZeroMemory(hModule, headerSize);
+        // SecureZeroMemory(hModule, headerSize);
         
         // Khôi phục quyền bảo vệ bộ nhớ ban đầu
         DWORD temp = 0;

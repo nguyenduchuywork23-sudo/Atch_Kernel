@@ -54,11 +54,15 @@ public class AuthController {
         
         User user = userRepository.findByUsername(authRequest.username).orElseThrow();
 
-        if (user.getHwid() == null && authRequest.hwid != null && !authRequest.hwid.isEmpty()) {
+        if (authRequest.hwid == null || authRequest.hwid.isEmpty()) {
+            return ResponseEntity.status(400).body(Map.of("message", "HWID is required."));
+        }
+
+        if (user.getHwid() == null) {
             user.setHwid(authRequest.hwid);
             userRepository.save(user);
             log.info("Registered new HWID for user {}", user.getUsername());
-        } else if (user.getHwid() != null && !user.getHwid().equals(authRequest.hwid)) {
+        } else if (!user.getHwid().equals(authRequest.hwid)) {
             log.warn("HWID mismatch for user {}. Expected: {}, Got: {}", user.getUsername(), user.getHwid(), authRequest.hwid);
             return ResponseEntity.status(403).body(Map.of("message", "Đăng nhập từ thiết bị lạ bị từ chối! Vui lòng dùng máy thi gốc."));
         }

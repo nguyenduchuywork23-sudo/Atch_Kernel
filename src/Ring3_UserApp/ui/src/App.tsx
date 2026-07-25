@@ -89,6 +89,18 @@ function App() {
 
   // ─── Timer ──────────────────────────────────────────────────────────────────
   useEffect(() => {
+    // [SECURITY] KIOSK MODE CHECK
+    // Đảm bảo chỉ chạy trong môi trường WebView2 (không cho phép mở bằng Chrome/Edge ngoài để tránh DevTools)
+    if (!window.chrome || !(window.chrome as any).webview) {
+       document.body.innerHTML = `
+         <div style="display:flex; height:100vh; background:#0f172a; color:#ef4444; justify-content:center; align-items:center; flex-direction:column; font-family:sans-serif;">
+           <h1 style="font-size:40px; margin-bottom:10px;">⚠️ CẢNH BÁO VI PHẠM ⚠️</h1>
+           <p style="font-size:20px;">Vui lòng khởi động bài thi thông qua Ứng dụng ATCH Exam Client!</p>
+           <p style="font-size:14px; color:#94a3b8; margin-top:20px;">Mọi hành vi can thiệp từ bên ngoài đã bị ghi nhận.</p>
+         </div>
+       `;
+       return;
+    }
     if (examStarted && userRole === 'student' && !examSubmitted && timeLeft > 0) {
       const timer = setTimeout(() => setTimeLeft(t => t - 1), 1000);
       return () => clearTimeout(timer);
@@ -236,8 +248,7 @@ function App() {
           })
           .catch(err => {
               console.error('Failed to load exam config', err);
-              setTargetExamUrl('https://itest.cmcu.edu.vn/');
-              setExamUnlocked(true);
+              // [SECURITY] Không tự động mở bài thi khi API lỗi!
           });
       }, 3000);
       return () => clearInterval(interval);
@@ -328,6 +339,7 @@ function App() {
   };
 
   const handleLogout = () => {
+    localStorage.removeItem('token'); // [SECURITY] Xóa JWT Token
     setUserRole(null);
     setExamStarted(false);
     setUsername('');
