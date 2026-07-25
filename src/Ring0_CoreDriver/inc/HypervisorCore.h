@@ -11,16 +11,16 @@ extern "C" {
 #endif
 
 // Khởi tạo nền tảng Hypervisor (Ring -1)
-NTSTATUS InitHypervisorCore();
+NTSTATUS InitHypervisorCore(VOID);
 
 // Kiểm tra phần cứng có hỗ trợ Ảo hóa hay không (Intel VT-x / AMD-V)
-BOOLEAN IsVirtualizationSupported();
+BOOLEAN IsVirtualizationSupported(VOID);
 
 // Cấp phát vùng nhớ VMXON liên tục trong RAM vật lý
-NTSTATUS AllocateVmxonRegion();
+NTSTATUS AllocateVmxonRegion(VOID);
 
 // STATIC ANALYSIS FIX C02: Giải phóng vùng nhớ VMXON khi Unload
-void UninitHypervisorCore();
+void UninitHypervisorCore(VOID);
 
 #ifdef __cplusplus
 }

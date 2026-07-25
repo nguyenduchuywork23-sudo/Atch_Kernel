@@ -98,8 +98,19 @@ if(MSVC)
         "/wd4324"              # Suppress: struct padding from WDK headers
         "/wd4273"              # Suppress: ZwXxx inconsistent dll linkage from ntddk.h
         "/guard:cf"            # Control Flow Guard
-        # "/Qspectre"            # Spectre Mitigation — TEMPORARILY DISABLED (requires Spectre libs)
-        #                        # Manual _mm_lfence() already inserted at all critical bounds checks
+        # OMEGA-XIX: Explicit security flags — previously missing/ambiguous
+        "/GS"                  # Buffer Security Check (was empty tag → ambiguous in kernel mode)
+        "/sdl"                 # Additional Security Checks (strict /GS, uninitialized vars, format strings)
+        # "/Qspectre"          # Spectre Mitigation — TEMPORARILY DISABLED (requires Spectre-mitigated libs)
+        #                      # Manual _mm_lfence() already inserted at all critical bounds checks
+    )
+
+    # OMEGA-XIX: Optimization flags only for Release configs (previously applied to ALL including Debug)
+    target_compile_options(Ring0_CoreDriver PRIVATE
+        "$<$<CONFIG:Release,MinSizeRel,RelWithDebInfo>:/O2>"    # Maximize Speed
+        "$<$<CONFIG:Release,MinSizeRel,RelWithDebInfo>:/Ob2>"   # Aggressive Inline
+        "$<$<CONFIG:Release,MinSizeRel,RelWithDebInfo>:/Oi>"    # Intrinsic Functions
+        "$<$<CONFIG:Release,MinSizeRel,RelWithDebInfo>:/GL>"    # Whole Program Optimization (LTO)
     )
 
     # ── Link options for kernel mode driver (modern target_link_options) ──────
@@ -116,12 +127,15 @@ if(MSVC)
         /DYNAMICBASE
         /CETCOMPAT
         /PDBALTPATH:%_PDB%
+        /INTEGRITYCHECK        # [OMEGA-X DELTA] Force Digital Signature check
+        # OMEGA-XXIII: /LTCG only for Release (requires /GL compiler flag)
+        "$<$<CONFIG:Release,MinSizeRel,RelWithDebInfo>:/LTCG>"
     )
 
     # ── WDK kernel libraries ─────────────────────────────────────────────────
     set(WDK_KMLIB_DIR "${WDK_LIB_ROOT}/km/x64")
 
-    foreach(_lib ntoskrnl hal wdmsec BufferOverflowFastFailK)
+    foreach(_lib ntoskrnl hal wdmsec BufferOverflowFastFailK wdmguid)
         find_library(WDK_${_lib}_LIB
             NAMES ${_lib}
             PATHS "${WDK_KMLIB_DIR}"
@@ -165,6 +179,11 @@ if(MSVC)
         _M_AMD64
         KMDF_VERSION_MAJOR=1
     )
+
+    # OMEGA-XXIII: Strip CMake default user-mode libs (kernel32.lib, user32.lib, etc.)
+    # These cause link errors or binary bloat in kernel-mode drivers.
+    set(CMAKE_C_STANDARD_LIBRARIES "" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_STANDARD_LIBRARIES "" CACHE STRING "" FORCE)
 endif()
 
 # ── Testing ───────────────────────────────────────────────────────────────────

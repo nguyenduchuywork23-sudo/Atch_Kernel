@@ -14,12 +14,24 @@ BOOLEAN IsHypervisorDetected() {
     return (InterlockedOr(&g_HypervisorDetected, 0) != 0);
 }
 
-// OMEGA-VI-KPTI-01: Removed CheckMsrLstarIntegrity to prevent false-positives under KVA Shadow
+// OMEGA-VI-KPTI-01: Updated CheckMsrLstarIntegrity to use dynamic baseline instead of hardcoded block
 BOOLEAN CheckMsrLstarIntegrity() {
-    return TRUE; // Deprecated due to KPTI/HVCI false positives
+    ULONG64 baseline = InterlockedOr64((LONG64 volatile*)&g_BaselineMsrLstar, 0);
+    if (baseline == 0) return TRUE; // Not initialized yet
+    
+    ULONG64 currentLstar = __readmsr(MSR_LSTAR);
+    if (currentLstar != baseline) {
+        AtchPrint(("AtchKernel: MSR_LSTAR HOOK DETECTED! Expected: 0x%llX, Got: 0x%llX\n", baseline, currentLstar));
+        InterlockedExchange(&g_HypervisorDetected, 1);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 BOOLEAN DetectHypervisor() {
+    // Initialize MSR_LSTAR baseline dynamically at load time
+    InterlockedExchange64((LONG64 volatile*)&g_BaselineMsrLstar, (LONG64)__readmsr(MSR_LSTAR));
+    
     int cpuInfo[4] = {0};
 
     // 1. CPUID Leaf 1 (Basic check)
@@ -42,11 +54,9 @@ BOOLEAN DetectHypervisor() {
         // and sets CPUID bit 31 on BARE METAL hardware. Blocking this = mass false positive.
         if (RtlCompareMemory(sig, "Microsoft Hv", 12) == 12) {
             AtchPrint(("AtchKernel: Microsoft Hyper-V/VBS detected — ALLOWED (native Windows feature).\n"));
-            return FALSE;
+            // [OMEGA-X DELTA] Không return FALSE để tránh bypass spoofing. Cho phép rơi xuống RDTSC.
         }
-        
-        // Check for known VM signatures (non-Microsoft)
-        if (RtlCompareMemory(sig, "VMwareVMware", 12) == 12 ||
+        else if (RtlCompareMemory(sig, "VMwareVMware", 12) == 12 ||
             RtlCompareMemory(sig, "KVMKVMKVM\0\0\0", 12) == 12 ||
             RtlCompareMemory(sig, "XenVMMXenVMM", 12) == 12 ||
             RtlCompareMemory(sig, "prl hyperv  ", 12) == 12 ||
@@ -55,27 +65,47 @@ BOOLEAN DetectHypervisor() {
             InterlockedExchange(&g_HypervisorDetected, 1);
             return TRUE;
         }
-        
-        // Unknown hypervisor with bit 31 set — suspicious
-        AtchPrint(("AtchKernel: Unknown hypervisor detected (sig: %.12s). Flagging.\n", sig));
-        InterlockedExchange(&g_HypervisorDetected, 1);
-        return TRUE;
+        else {
+            // Unknown hypervisor with bit 31 set — suspicious
+            AtchPrint(("AtchKernel: Unknown hypervisor detected (sig: %.12s). Flagging.\n", sig));
+            InterlockedExchange(&g_HypervisorDetected, 1);
+            return TRUE;
+        }
     }
 
+
     // 3. RDTSC Timing Attack (VM-Exit Delay)
+    // OMEGA-XXIII: Check CPUID support for RDTSCP to prevent #UD BSOD on older CPUs
+    // OMEGA-XXVI: First verify CPU supports extended CPUID leaves before querying 0x80000001
+    int maxExtInfo[4] = {0};
+    __cpuid(maxExtInfo, (int)0x80000000);
+    BOOLEAN hasExtendedLeaf = ((ULONG)maxExtInfo[0] >= 0x80000001);
+    BOOLEAN hasRdtscp = FALSE;
+    if (hasExtendedLeaf) {
+    int rdtscpInfo[4] = {0};
+    __cpuid(rdtscpInfo, (int)0x80000001);
+    hasRdtscp = ((rdtscpInfo[3] & (1u << 27)) != 0);
+    }
+
     ULONG detectedCount = 0;
     for (int i = 0; i < 10; ++i) {
         ULONG64 tsc1, tsc2;
         unsigned int aux = 0;
         
         KIRQL oldIrql;
+        // OMEGA-XXVI: Runtime IRQL guard — NT_ASSERT is no-op in Release builds,
+        // so add real check to prevent BSoD if called at IRQL > DISPATCH_LEVEL
+        if (KeGetCurrentIrql() > DISPATCH_LEVEL) {
+            AtchPrint(("AtchKernel: DetectHypervisor RDTSC skipped — IRQL too high (%d).\n", KeGetCurrentIrql()));
+            return FALSE;
+        }
         KeRaiseIrql(DISPATCH_LEVEL, &oldIrql);
         
         volatile int timingCpuInfo[4] = {0};
         __cpuid((int*)timingCpuInfo, 0); // Serialize instruction pipeline
-        tsc1 = __rdtscp(&aux);
+        tsc1 = hasRdtscp ? __rdtscp(&aux) : __rdtsc();
         __cpuid((int*)timingCpuInfo, 0); // Forces VM-Exit — volatile prevents dead code elimination
-        tsc2 = __rdtscp(&aux);
+        tsc2 = hasRdtscp ? __rdtscp(&aux) : __rdtsc();
         
         KeLowerIrql(oldIrql);
 

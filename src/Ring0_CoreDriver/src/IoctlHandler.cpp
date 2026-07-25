@@ -7,6 +7,12 @@
 #include "../inc/AntiVM.h"
 
 #include "../inc/AntiDKOM.h"
+#include "../inc/DmaProtection.h"
+#include "../inc/Callbacks.h"
+#include <ntintsafe.h>
+
+extern WDFDEVICE g_ControlDevice;
+extern "C" PCHAR PsGetProcessImageFileName(PEPROCESS Process);
 
 static volatile WDFQUEUE g_NotificationQueue = NULL;
 static volatile ULONG g_ClientProcessId = 0;
@@ -104,15 +110,43 @@ void LockExam() {
     InterlockedExchange((LONG volatile*)&g_IsExamLocked, 1);
 }
 void UnlockExam() {
-    if (InterlockedCompareExchange((LONG volatile*)&g_IsExamLocked, 0, 1) == 1) {
-        // OMEGA-V-POWER-01: Use unbiased interrupt time (excludes sleep/hibernate)
-        ULONGLONG unbiasedTime;
-        KeQueryUnbiasedInterruptTime(&unbiasedTime);
+    // OMEGA-XVIII: Write fresh heartbeat time BEFORE clearing lock.
+    // Previous order (clear lock → write time) had a race window where heartbeat
+    // thread could see unlocked + old time → false timeout → immediate re-lock.
+    if (InterlockedOr((LONG volatile*)&g_IsExamLocked, 0) == 1) {
+        ULONGLONG unbiasedTime = KeQueryUnbiasedInterruptTime();
         InterlockedExchange64(&g_LastHeartbeatTime, (LONGLONG)unbiasedTime);
+        KeMemoryBarrier();
+        InterlockedCompareExchange((LONG volatile*)&g_IsExamLocked, 0, 1);
     }
 }
 BOOLEAN IsExamLocked() {
     return (InterlockedOr((LONG volatile*)&g_IsExamLocked, 0) != 0);
+}
+
+extern volatile LONG g_OutstandingWorkItems;
+
+static volatile LONG g_IsScannerRunning = 0;
+static volatile LONG g_IsDkomRunning = 0;
+
+IO_WORKITEM_ROUTINE ScannerWorkerRoutine;
+VOID ScannerWorkerRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context) {
+    UNREFERENCED_PARAMETER(DeviceObject);
+    PIO_WORKITEM workItem = (PIO_WORKITEM)Context;
+    CheckMemoryScanner();
+    InterlockedExchange(&g_IsScannerRunning, 0);
+    IoFreeWorkItem(workItem);
+    InterlockedDecrement(&g_OutstandingWorkItems);
+}
+
+IO_WORKITEM_ROUTINE DkomWorkerRoutine;
+VOID DkomWorkerRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context) {
+    UNREFERENCED_PARAMETER(DeviceObject);
+    PIO_WORKITEM workItem = (PIO_WORKITEM)Context;
+    CheckAntiDKOM();
+    InterlockedExchange(&g_IsDkomRunning, 0);
+    IoFreeWorkItem(workItem);
+    InterlockedDecrement(&g_OutstandingWorkItems);
 }
 
 VOID HeartbeatThreadRoutine(PVOID Context)
@@ -142,8 +176,7 @@ VOID HeartbeatThreadRoutine(PVOID Context)
         if (clientPid == 0) continue;
 
         // OMEGA-V-POWER-01: Use unbiased interrupt time (excludes sleep/hibernate)
-        ULONGLONG currentUnbiased;
-        KeQueryUnbiasedInterruptTime(&currentUnbiased);
+        ULONGLONG currentUnbiased = KeQueryUnbiasedInterruptTime();
         LONGLONG currentTime = (LONGLONG)currentUnbiased;
 
         LONGLONG lastTime = InterlockedCompareExchange64(&g_LastHeartbeatTime, 0, 0);
@@ -189,8 +222,32 @@ VOID HeartbeatThreadRoutine(PVOID Context)
             }
         }
         
-        CheckAntiDKOM();
-        CheckMemoryScanner();
+        // Queue CheckAntiDKOM to worker thread to prevent Heartbeat bottleneck
+        if (InterlockedCompareExchange(&g_IsDkomRunning, 1, 0) == 0) {
+            PDEVICE_OBJECT devObj = GetDeviceObjectForCallbacks();
+            PIO_WORKITEM workItem = devObj ? IoAllocateWorkItem(devObj) : NULL;
+            if (workItem) {
+                InterlockedIncrement(&g_OutstandingWorkItems);
+                IoQueueWorkItem(workItem, DkomWorkerRoutine, DelayedWorkQueue, workItem);
+            } else {
+                InterlockedExchange(&g_IsDkomRunning, 0);
+            }
+        }
+
+        // Queue CheckMemoryScanner to worker thread to prevent Heartbeat bottleneck
+        if (InterlockedCompareExchange(&g_IsScannerRunning, 1, 0) == 0) {
+            extern PDEVICE_OBJECT GetDeviceObjectForCallbacks();
+            PDEVICE_OBJECT devObj = GetDeviceObjectForCallbacks();
+            PIO_WORKITEM workItem = devObj ? IoAllocateWorkItem(devObj) : NULL;
+            if (workItem) {
+                InterlockedIncrement(&g_OutstandingWorkItems);
+                IoQueueWorkItem(workItem, ScannerWorkerRoutine, DelayedWorkQueue, workItem);
+            } else {
+                InterlockedExchange(&g_IsScannerRunning, 0);
+            }
+        }
+        
+        CheckDmaThreats(); // Dma check is fast, keep inline
     }
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
@@ -209,7 +266,13 @@ PVOID SignalStopHeartbeatThread() {
 
 void UninitializeIoctlQueue()
 {
-    InterlockedExchangePointer((PVOID volatile*)&g_NotificationQueue, NULL);
+    // OMEGA-XXII: Explicitly purge pending notification requests before teardown.
+    // Without this, WDF Verifier Enhanced flags orphaned requests in manual queue.
+    WDFQUEUE localQueue = (WDFQUEUE)InterlockedExchangePointer(
+        (PVOID volatile*)&g_NotificationQueue, NULL);
+    if (localQueue != NULL) {
+        WdfIoQueuePurgeSynchronously(localQueue);
+    }
 }
 
 NTSTATUS InitializeIoctlQueue(WDFDEVICE Device)
@@ -226,7 +289,7 @@ NTSTATUS InitializeIoctlQueue(WDFDEVICE Device)
     WDF_OBJECT_ATTRIBUTES_INIT(&queueAttributes);
     queueAttributes.ExecutionLevel = WdfExecutionLevelPassive;
 
-    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
     queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
 
     status = WdfIoQueueCreate(Device, &queueConfig, &queueAttributes, &queue);
@@ -332,29 +395,32 @@ void EvtIoDeviceControl(
             }
 
             // Acquire mutex to serialize with TERMINATE_EXAM
-            NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL); // H05: IRQL guard
+            // OMEGA-XIV: Runtime IRQL guard (NT_ASSERT is no-op in Release builds)
+            if (KeGetCurrentIrql() > APC_LEVEL) {
+                status = STATUS_UNSUCCESSFUL;
+                break;
+            }
             ExAcquireFastMutex(&g_ExamMutex);
 
-            // OMEGA-FINAL CRIT-01: Set inverted BEFORE CAS to prevent VerifyClientPid race.
-            // VerifyClientPid skips check when pid==0, so stale pidInv is harmless.
-            // But if CAS succeeds and pidInv is stale, VerifyClientPid sees non-zero pid + old pidInv → BSOD.
-            InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)(~callerPid));
-            KeMemoryBarrier();
-            if (InterlockedCompareExchange((LONG volatile*)&g_ClientProcessId, callerPid, 0) != 0) {
-                // CAS failed — restore inverted to safe state
-                InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
+            // OMEGA-XIV: Safe initialization under mutex
+            if (InterlockedOr((LONG volatile*)&g_ClientProcessId, 0) != 0) {
                 ExReleaseFastMutex(&g_ExamMutex);
                 status = STATUS_ALREADY_INITIALIZED;
                 break;
             }
 
-            // OMEGA-VII-R3-006: Pin EPROCESS pointer for PID-recycling-safe cleanup.
-            // IoGetRequestorProcess returns the EPROCESS of the true caller.
+            // Now guaranteed to succeed, and exam is currently inactive.
+            // Safe to set Inverted and EProcess BEFORE PID to prevent VerifyClientPid/ObCallback races.
+            InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)(~callerPid));
+            
             PEPROCESS callerEProcess = IoGetRequestorProcess(WdfRequestWdmGetIrp(Request));
             if (callerEProcess != NULL) {
                 ObReferenceObject(callerEProcess);
             }
             InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, callerEProcess);
+
+            KeMemoryBarrier();
+            InterlockedCompareExchange((LONG volatile*)&g_ClientProcessId, callerPid, 0);
 
             // OMEGA-II CRIT-04: Store full token instead of hash
             RtlCopyMemory(g_SessionTokenStore, pData->SessionToken, sizeof(g_SessionTokenStore));
@@ -362,8 +428,7 @@ void EvtIoDeviceControl(
             RtlSecureZeroMemory(pData->SessionToken, sizeof(pData->SessionToken));
 
             // OMEGA-V-POWER-01: Use unbiased interrupt time (excludes sleep/hibernate)
-            ULONGLONG unbiasedTime;
-            KeQueryUnbiasedInterruptTime(&unbiasedTime);
+            ULONGLONG unbiasedTime = KeQueryUnbiasedInterruptTime();
             InterlockedExchange64(&g_LastHeartbeatTime, (LONGLONG)unbiasedTime);
             
             // Block exam start if hypervisor was detected during DriverEntry
@@ -442,11 +507,20 @@ void EvtIoDeviceControl(
             if (needCreateThread && InterlockedOr((LONG volatile*)&g_HasHeartbeatThread, 0) == 0 && 
                 InterlockedOr((LONG volatile*)&g_HeartbeatEpoch, 0) == (LONG)currentEpoch) {
                 AtchPrint(("AtchKernel: CRITICAL - Heartbeat thread failed! Rolling back exam.\n"));
-                NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL); // H05: IRQL guard
+                // OMEGA-XIV: Runtime IRQL guard
+                if (KeGetCurrentIrql() > APC_LEVEL) { 
+                    status = STATUS_UNSUCCESSFUL; 
+                    break; 
+                }
                 ExAcquireFastMutex(&g_ExamMutex);
                 if (InterlockedOr((LONG volatile*)&g_HeartbeatEpoch, 0) == (LONG)currentEpoch) {
                     InterlockedExchange((LONG volatile*)&g_ClientProcessId, 0);
                     InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
+                    // OMEGA-VIII-R1-001: Release pinned EPROCESS on rollback to prevent kernel object leak.
+                    PEPROCESS rollbackEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
+                    if (rollbackEProcess != NULL) {
+                        ObDereferenceObject(rollbackEProcess);
+                    }
                     RtlSecureZeroMemory(g_SessionTokenStore, sizeof(g_SessionTokenStore));
                     InterlockedExchange64(&g_LastHeartbeatTime, 0);
                     InterlockedExchange((LONG volatile*)&g_IsExamLocked, 0);
@@ -468,8 +542,8 @@ void EvtIoDeviceControl(
 
         case IOCTL_AK_TERMINATE_EXAM:
         {
-            // OMEGA-V-TERM-01: Accept optional token for additional verification
-            if (OutputBufferLength != 0) {
+            // [OMEGA-X DELTA] CRIT-02: Bắt buộc Session Token để ngắt bảo vệ.
+            if (InputBufferLength != sizeof(WHITELIST_DATA) || OutputBufferLength != 0) {
                 status = STATUS_INFO_LENGTH_MISMATCH;
                 break;
             }
@@ -478,6 +552,18 @@ void EvtIoDeviceControl(
                 status = STATUS_ACCESS_DENIED;
                 break;
             }
+
+            // Truy xuất và xác thực Token trước
+            PWHITELIST_DATA pTermData = NULL;
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(WHITELIST_DATA), (PVOID*)&pTermData, NULL);
+            if (!NT_SUCCESS(status)) break;
+            
+            if (!CompareSessionTokenConstantTime(pTermData->SessionToken)) {
+                status = STATUS_ACCESS_DENIED;
+                break;
+            }
+            // Xóa token khỏi buffer để chống RAM dump
+            RtlSecureZeroMemory(pTermData->SessionToken, sizeof(pTermData->SessionToken));
 
             // OMEGA-VII-TERM-01: Fix false-positive PID mismatch in WDF worker thread.
             // WDF might dispatch this IOCTL asynchronously in a system worker thread,
@@ -501,7 +587,11 @@ void EvtIoDeviceControl(
                 break;
             }
 
-            NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL); // H05: IRQL guard
+            // OMEGA-XIV: Runtime IRQL guard
+            if (KeGetCurrentIrql() > APC_LEVEL) {
+                status = STATUS_UNSUCCESSFUL;
+                break;
+            }
             ExAcquireFastMutex(&g_ExamMutex);
 
             if (InterlockedCompareExchange((LONG volatile*)&g_ClientProcessId, 0, callerPid) != (LONG)callerPid) {
@@ -563,8 +653,7 @@ void EvtIoDeviceControl(
             // Scrub token from buffer after verification
             RtlSecureZeroMemory(pHbData->SessionToken, sizeof(pHbData->SessionToken));
             // OMEGA-V-POWER-01: Use unbiased interrupt time (excludes sleep/hibernate)
-            ULONGLONG unbiasedTime;
-            KeQueryUnbiasedInterruptTime(&unbiasedTime);
+            ULONGLONG unbiasedTime = KeQueryUnbiasedInterruptTime();
             InterlockedExchange64(&g_LastHeartbeatTime, (LONGLONG)unbiasedTime);
             status = STATUS_SUCCESS;
             break;
@@ -590,6 +679,8 @@ void EvtIoDeviceControl(
                 status = STATUS_ACCESS_DENIED;
                 break;
             }
+            // OMEGA-XV: Scrub token from WDF buffer (matches HEARTBEAT/TERMINATE/LISTEN)
+            RtlSecureZeroMemory(pUnlockData->SessionToken, sizeof(pUnlockData->SessionToken));
             AtchPrint(("AtchKernel: Unlock Exam received (token verified).\n"));
             UnlockExam();
             status = STATUS_SUCCESS;
@@ -652,13 +743,16 @@ void EvtIoDeviceControl(
                     status = STATUS_ACCESS_DENIED;
                     break;
                 }
+                // OMEGA-XV: Scrub token from WDF buffer
+                RtlSecureZeroMemory(pData->SessionToken, sizeof(pData->SessionToken));
                 ULONG targetPid = pData->Pid;
                 // OMEGA-FINAL M13: Reject PID 0 and PID 4 (System) to prevent bypass
                 if (targetPid == 0 || targetPid == 4) {
                     status = STATUS_INVALID_PARAMETER;
                     break;
                 }
-                NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL); // H05: IRQL guard
+                // OMEGA-XIV: Runtime IRQL guard
+                if (KeGetCurrentIrql() > APC_LEVEL) { status = STATUS_UNSUCCESSFUL; break; }
                 ExAcquireFastMutex(&g_ExamMutex);
                 LONG currentIndex = (LONG)InterlockedOr((LONG volatile*)&g_ActiveWhitelistIndex, 0);
                 ULONG currentCount = (ULONG)InterlockedOr((LONG volatile*)&g_DynamicWhitelistCount[currentIndex], 0);
@@ -676,7 +770,8 @@ void EvtIoDeviceControl(
                             g_DynamicWhitelistPids[newIndex][i] = g_DynamicWhitelistPids[currentIndex][i];
                         }
                         g_DynamicWhitelistPids[newIndex][currentCount] = targetPid;
-                        g_DynamicWhitelistCount[newIndex] = currentCount + 1;
+                        // OMEGA-XV: InterlockedExchange for ARM64 consistency
+                        InterlockedExchange((LONG volatile*)&g_DynamicWhitelistCount[newIndex], (LONG)(currentCount + 1));
                         KeMemoryBarrier();
                         InterlockedExchange(&g_ActiveWhitelistIndex, newIndex);
                     }
@@ -715,6 +810,8 @@ void EvtIoDeviceControl(
                     status = STATUS_ACCESS_DENIED;
                     break;
                 }
+                // OMEGA-XV: Scrub token from WDF buffer
+                RtlSecureZeroMemory(pBlacklist->SessionToken, sizeof(pBlacklist->SessionToken));
                 // OMEGA-II L06: Reject zero items — prevents silent blacklist clear
                 if (pBlacklist->ItemCount == 0 || pBlacklist->ItemCount > 1024) {
                     status = STATUS_INFO_LENGTH_MISMATCH;
@@ -737,7 +834,8 @@ void EvtIoDeviceControl(
                 }
 
                 PWCHAR pItems = (PWCHAR)(pBlacklist + 1);
-                NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL); // H05: IRQL guard
+                // OMEGA-XIV: Runtime IRQL guard
+                if (KeGetCurrentIrql() > APC_LEVEL) { status = STATUS_UNSUCCESSFUL; break; }
                 ExAcquireFastMutex(&g_ExamMutex);
                 LONG currentIndex = (LONG)InterlockedOr((LONG volatile*)&g_ActiveBlacklistIndex, 0);
                 LONG newIndex = 1 - currentIndex;
@@ -748,7 +846,8 @@ void EvtIoDeviceControl(
                     RtlInitUnicodeString(&usStr, currentStr);
                     g_DynamicBlacklistHashes[newIndex][i] = RuntimeHashUnicodeString(&usStr);
                 }
-                g_DynamicBlacklistCount[newIndex] = pBlacklist->ItemCount;
+                // OMEGA-XV: InterlockedExchange for ARM64 consistency
+                InterlockedExchange((LONG volatile*)&g_DynamicBlacklistCount[newIndex], (LONG)pBlacklist->ItemCount);
                 KeMemoryBarrier();
                 InterlockedExchange(&g_ActiveBlacklistIndex, newIndex);
                 ExReleaseFastMutex(&g_ExamMutex);
@@ -816,6 +915,13 @@ ULONG GetExamClientProcessId()
     return pid;
 }
 
+// OMEGA-VIII-R4-001: Accessor for cached EPROCESS — avoids PsLookup in ObCallback hot path.
+PEPROCESS GetClientEProcess()
+{
+    return (PEPROCESS)InterlockedCompareExchangePointer(
+        (PVOID volatile*)&g_ClientEProcess, NULL, NULL);
+}
+
 HANDLE GetHeartbeatThreadId() {
     return (HANDLE)InterlockedCompareExchangePointer((PVOID volatile*)&g_HeartbeatThreadId, NULL, NULL);
 }
@@ -827,7 +933,8 @@ PKTHREAD GetHeartbeatThreadObject() {
 // Emergency cleanup when exam client process crashes (called from ProcessNotifyCallbackEx)
 void EmergencyCleanupExam(ULONG deadPid)
 {
-    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL); // H05: IRQL guard
+    // OMEGA-XIV: Runtime IRQL guard
+    if (KeGetCurrentIrql() > APC_LEVEL) return;
     ExAcquireFastMutex(&g_ExamMutex);
 
     PVOID threadToWait = NULL;
@@ -884,7 +991,8 @@ void EmergencyCleanupExam(ULONG deadPid)
 
 // Clear all exam state securely (called on Unload)
 void ClearExamState() {
-    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL); // H05: IRQL guard
+    // OMEGA-XIV: Runtime IRQL guard
+    if (KeGetCurrentIrql() > APC_LEVEL) return;
     ExAcquireFastMutex(&g_ExamMutex);
     InterlockedExchange((LONG volatile*)&g_ClientProcessId, 0);
     InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);

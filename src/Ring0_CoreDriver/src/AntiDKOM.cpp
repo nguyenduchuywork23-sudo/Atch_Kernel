@@ -24,7 +24,7 @@ ULONG GetActiveProcessLinksOffset() {
         pidAddr.VirtualAddress = (PUCHAR)sysProc + i;
         SIZE_T bytesCopied = 0;
         
-        if (NT_SUCCESS(MmCopyMemory(&currentPid, pidAddr, sizeof(HANDLE), MM_COPY_MEMORY_VIRTUAL, &bytesCopied)) && currentPid == sysPid) {
+        if (NT_SUCCESS(MmCopyMemory(&currentPid, pidAddr, sizeof(HANDLE), MM_COPY_MEMORY_VIRTUAL, &bytesCopied)) && bytesCopied == sizeof(HANDLE) && currentPid == sysPid) {
             // Scan dynamically up to 0x40 bytes ahead to find the first valid LIST_ENTRY pointing back to itself
             for (ULONG j = sizeof(PVOID); j < 0x40; j += sizeof(PVOID)) {
                 ULONG offset = i + j; 
@@ -34,13 +34,13 @@ ULONG GetActiveProcessLinksOffset() {
                 MM_COPY_ADDRESS listAddr;
                 listAddr.VirtualAddress = list;
                 
-                if (NT_SUCCESS(MmCopyMemory(&listCopy, listAddr, sizeof(LIST_ENTRY), MM_COPY_MEMORY_VIRTUAL, &bytesCopied))) {
+                if (NT_SUCCESS(MmCopyMemory(&listCopy, listAddr, sizeof(LIST_ENTRY), MM_COPY_MEMORY_VIRTUAL, &bytesCopied)) && bytesCopied == sizeof(LIST_ENTRY)) {
                     if (listCopy.Flink != NULL && listCopy.Blink != NULL) {
                         PLIST_ENTRY flinkBlink = NULL;
                         MM_COPY_ADDRESS flinkBlinkAddr;
                         flinkBlinkAddr.VirtualAddress = &listCopy.Flink->Blink;
                         
-                        if (NT_SUCCESS(MmCopyMemory(&flinkBlink, flinkBlinkAddr, sizeof(PVOID), MM_COPY_MEMORY_VIRTUAL, &bytesCopied))) {
+                        if (NT_SUCCESS(MmCopyMemory(&flinkBlink, flinkBlinkAddr, sizeof(PVOID), MM_COPY_MEMORY_VIRTUAL, &bytesCopied)) && bytesCopied == sizeof(PVOID)) {
                             if (flinkBlink == list) {
                                 return offset; // Found ActiveProcessLinks offset
                             }
@@ -69,7 +69,7 @@ BOOLEAN IsProcessInActiveList(PEPROCESS TargetProcess, ULONG ListOffset) {
         SIZE_T bytesCopied = 0;
         
         NTSTATUS status = MmCopyMemory(&curr, headAddress, sizeof(PVOID), MM_COPY_MEMORY_VIRTUAL, &bytesCopied);
-        if (!NT_SUCCESS(status) || curr == NULL) {
+        if (!NT_SUCCESS(status) || bytesCopied != sizeof(PVOID) || curr == NULL) {
             return FALSE;
         }
 
@@ -83,7 +83,7 @@ BOOLEAN IsProcessInActiveList(PEPROCESS TargetProcess, ULONG ListOffset) {
             MM_COPY_ADDRESS address;
             address.VirtualAddress = &curr->Flink;
             status = MmCopyMemory(&nextNode, address, sizeof(PVOID), MM_COPY_MEMORY_VIRTUAL, &bytesCopied);
-            if (!NT_SUCCESS(status)) {
+            if (!NT_SUCCESS(status) || bytesCopied != sizeof(PVOID)) {
                 break;
             }
             
@@ -111,9 +111,8 @@ void CheckAntiDKOM() {
     // Scanning 65536 PIDs every 1s causes severe CID table lock contention.
     static volatile LONGLONG g_LastDkomCheckTime = 0;
     // OMEGA-V-POWER-01: Use unbiased interrupt time (excludes sleep/hibernate)
-    ULONGLONG nowUnbiased;
-    KeQueryUnbiasedInterruptTime(&nowUnbiased);
-    LONGLONG now = (LONGLONG)nowUnbiased;
+    ULONGLONG currentTime = KeQueryUnbiasedInterruptTime();
+    LONGLONG now = (LONGLONG)currentTime;
     LONGLONG lastCheck = InterlockedCompareExchange64(&g_LastDkomCheckTime, 0, 0);
     if (now - lastCheck < 300000000LL) return; // 30 seconds
     InterlockedExchange64(&g_LastDkomCheckTime, now);
@@ -148,7 +147,7 @@ void CheckAntiDKOM() {
                             UNICODE_STRING msg;
                             RtlInitUnicodeString(&msg, L"Hidden Process Detected (DKOM)");
                             NotifyViolationToRing3(pid, &msg, ViolationType::VIOLATION_DKOM_HIDDEN);
-                            ForceKillExamProcess((HANDLE)(ULONG_PTR)examClientPid);
+                            ForceKillProcess((HANDLE)(ULONG_PTR)examClientPid);
                         }
                     } else {
                         AtchPrint(("Atch_Kernel: [AntiDKOM] PID %lu is terminating naturally, ignoring false positive.\n", pid));

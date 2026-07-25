@@ -46,16 +46,28 @@ static NTSTATUS FilterReadCompletion(PDEVICE_OBJECT DeviceObject, PIRP Irp, PVOI
 
     if (NT_SUCCESS(Irp->IoStatus.Status)) {
         if (IsExamLocked()) {
-            if (Irp->AssociatedIrp.SystemBuffer && Irp->IoStatus.Information > 0) {
-                RtlZeroMemory(Irp->AssociatedIrp.SystemBuffer, Irp->IoStatus.Information);
+            // Validate Information against actual buffer length to prevent memory corruption
+            PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+            ULONG readLen = stack->Parameters.Read.Length;
+            ULONG_PTR infoLen = Irp->IoStatus.Information;
+            if (infoLen > readLen) {
+                infoLen = readLen; // Trust the original request size, not the lower driver
+            }
+
+            if (Irp->AssociatedIrp.SystemBuffer && infoLen > 0) {
+                RtlZeroMemory(Irp->AssociatedIrp.SystemBuffer, infoLen);
             }
 
             // Also zero the MDL buffer for DO_DIRECT_IO devices
-            if (Irp->MdlAddress != NULL && Irp->IoStatus.Information > 0) {
+            if (Irp->MdlAddress != NULL && infoLen > 0) {
                 // OMEGA-II M04: HighPagePriority at DISPATCH_LEVEL prevents fail-open under memory pressure
                 PVOID mdlBuffer = MmGetSystemAddressForMdlSafe(Irp->MdlAddress, HighPagePriority | MdlMappingNoExecute);
                 if (mdlBuffer) {
-                    RtlZeroMemory(mdlBuffer, Irp->IoStatus.Information);
+                    RtlZeroMemory(mdlBuffer, infoLen);
+                } else {
+                    // Fail-Safe: Nếu cạn kiệt bộ nhớ không thể zero đệm, ta buộc phải drop dữ liệu
+                    Irp->IoStatus.Information = 0;
+                    Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
                 }
             }
         }
@@ -97,7 +109,12 @@ static NTSTATUS FilterDispatchPassThrough(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             if (stack->MajorFunction == IRP_MJ_PNP &&
                 stack->MinorFunction == IRP_MN_REMOVE_DEVICE) {
                 
-                // OMEGA-VII-PNP-01: MUST wait for remove lock BEFORE passing IRP down.
+                // OMEGA-XVI CRIT-01: Release the initial NULL-tagged lock (from AttachToDevice)
+                // BEFORE IoReleaseRemoveLockAndWait. Without this, the Wait will hang forever
+                // because the NULL-tagged lock is never released in the PnP path.
+                IoReleaseRemoveLock(&ext->RemoveLock, NULL);
+                
+                // OMEGA-VII-PNP-01: Now release the IRP-tagged lock and wait for all others.
                 IoReleaseRemoveLockAndWait(&ext->RemoveLock, Irp);
 
                 IoSkipCurrentIrpStackLocation(Irp);
@@ -232,7 +249,12 @@ static NTSTATUS AttachToDevice(PDEVICE_OBJECT TargetDevice, BOOLEAN IsKeyboard)
     // OMEGA-FINAL HIGH-07: Acquire remove lock with NULL tag to match
     // IoReleaseRemoveLockAndWait(NULL) during teardown. Without this,
     // Driver Verifier will BSOD on tag mismatch.
-    IoAcquireRemoveLock(&ext->RemoveLock, NULL);
+    // OMEGA-XVII: Check return — if device already removing, abort attach.
+    NTSTATUS lockStatus = IoAcquireRemoveLock(&ext->RemoveLock, NULL);
+    if (!NT_SUCCESS(lockStatus)) {
+        IoDeleteDevice(filterDevice);
+        return lockStatus;
+    }
 
     filterDevice->Flags |= (TargetDevice->Flags & (DO_BUFFERED_IO | DO_DIRECT_IO | DO_POWER_PAGABLE));
 

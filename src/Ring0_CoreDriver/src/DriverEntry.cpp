@@ -12,6 +12,7 @@
 #include "../inc/InputBlocker.h"
 #include "../inc/MemoryScanner.h"
 #include "../inc/HypervisorCore.h"
+#include "../inc/DmaProtection.h"
 
 // Biến toàn cục để lưu IRP Dispatch của WDF chống SSDT/IRP Hooking
 // OMEGA-II M03: volatile prevents compiler caching stale values in heartbeat thread loop
@@ -45,7 +46,9 @@ extern "C" NTSTATUS DriverEntry(
 
     // Khởi tạo WDF_DRIVER_CONFIG
     WDF_DRIVER_CONFIG_INIT(&config, WDF_NO_EVENT_CALLBACK);
-    config.EvtDriverUnload = EvtDriverUnload;
+    // [OMEGA-X DELTA] CHỐNG SC STOP: Không đăng ký EvtDriverUnload,
+    // biến AtchKernel thành driver "bất tử" trong phiên làm việc.
+    // config.EvtDriverUnload = EvtDriverUnload;
 
     // Tạo WDFDRIVER object
     status = WdfDriverCreate(DriverObject,
@@ -148,6 +151,12 @@ extern "C" NTSTATUS DriverEntry(
         goto cleanup;
     }
 
+    status = InitDmaProtection(DriverObject);
+    if (!NT_SUCCESS(status)) {
+        AtchPrint(("AtchKernel: InitDmaProtection thất bại - Lỗi 0x%X\n", status));
+        goto cleanup;
+    }
+
     // OMEGA-FINAL HIGH-02: Finish device initialization AFTER all callbacks are registered
     WdfControlFinishInitializing(controlDevice);
     InterlockedExchange(&g_DriverReady, 1);
@@ -164,8 +173,8 @@ extern "C" NTSTATUS DriverEntry(
         AtchPrint(("AtchKernel: HWID sinh ra: %wZ\n", &hwid));
         if (hwid.Buffer) {
             RtlSecureZeroMemory(hwid.Buffer, hwid.MaximumLength);
+            ExFreePoolWithTag(hwid.Buffer, 'diWH');
         }
-        ExFreePoolWithTag(hwid.Buffer, 'diWH');
     } else {
         AtchPrint(("AtchKernel: Sinh HWID thất bại - Lỗi 0x%X\n", status));
     }
@@ -195,7 +204,11 @@ extern "C" NTSTATUS DriverEntry(
             RtlInitUnicodeString(&valueName, L"");
             UNICODE_STRING valueData;
             RtlInitUnicodeString(&valueData, L"Driver");
-            ZwSetValueKey(keyHandle, &valueName, 0, REG_SZ, valueData.Buffer, valueData.Length + sizeof(WCHAR));
+            // OMEGA-XVII: Check return to detect SafeBoot registration failure
+            NTSTATUS svkStatus = ZwSetValueKey(keyHandle, &valueName, 0, REG_SZ, valueData.Buffer, valueData.Length + sizeof(WCHAR));
+            if (!NT_SUCCESS(svkStatus)) {
+                AtchPrint(("AtchKernel: [OMEGA-XVII] WARNING - SafeBoot Minimal registration failed: 0x%X\n", svkStatus));
+            }
             ZwClose(keyHandle);
         }
 
@@ -207,7 +220,11 @@ extern "C" NTSTATUS DriverEntry(
             RtlInitUnicodeString(&valueName, L"");
             UNICODE_STRING valueData;
             RtlInitUnicodeString(&valueData, L"Driver");
-            ZwSetValueKey(keyHandle, &valueName, 0, REG_SZ, valueData.Buffer, valueData.Length + sizeof(WCHAR));
+            // OMEGA-XVII: Check return to detect SafeBoot registration failure
+            NTSTATUS svk2 = ZwSetValueKey(keyHandle, &valueName, 0, REG_SZ, valueData.Buffer, valueData.Length + sizeof(WCHAR));
+            if (!NT_SUCCESS(svk2)) {
+                AtchPrint(("AtchKernel: [OMEGA-XVII] WARNING - SafeBoot Network registration failed: 0x%X\n", svk2));
+            }
             ZwClose(keyHandle);
         }
         AtchPrint(("AtchKernel: SafeBoot self-registration complete.\n"));
@@ -227,8 +244,6 @@ extern "C" NTSTATUS DriverEntry(
             // SDDL: SYSTEM full control only, deny all others write
             UNICODE_STRING sddlString;
             RtlInitUnicodeString(&sddlString, L"D:P(A;;KA;;;SY)");
-            PSECURITY_DESCRIPTOR pSD = NULL;
-            ULONG sdSize = 0;
             // Use SeConvertStringSecurityDescriptor if available, or build manually
             // Simple approach: use ZwSetSecurityObject with a DACL that allows only SYSTEM
             SECURITY_DESCRIPTOR sd;
@@ -250,8 +265,13 @@ extern "C" NTSTATUS DriverEntry(
                     if (NT_SUCCESS(sdStatus)) {
                         sdStatus = RtlSetDaclSecurityDescriptor(&sd, TRUE, pAcl, FALSE);
                         if (NT_SUCCESS(sdStatus)) {
-                            ZwSetSecurityObject(svcKeyHandle, DACL_SECURITY_INFORMATION, &sd);
-                            AtchPrint(("AtchKernel: Service key ACL hardened to SYSTEM-only.\n"));
+                            // OMEGA-XVII: Check return — ACL hardening failure is security-critical
+                            NTSTATUS secStatus = ZwSetSecurityObject(svcKeyHandle, DACL_SECURITY_INFORMATION, &sd);
+                            if (NT_SUCCESS(secStatus)) {
+                                AtchPrint(("AtchKernel: Service key ACL hardened to SYSTEM-only.\n"));
+                            } else {
+                                AtchPrint(("AtchKernel: [OMEGA-XVII] WARNING - ACL hardening FAILED: 0x%X. Service key may be tamper-vulnerable!\n", secStatus));
+                            }
                         }
                     }
                 }
@@ -279,12 +299,17 @@ extern "C" void EvtDriverUnload(_In_ WDFDRIVER Driver)
 {
     UNREFERENCED_PARAMETER(Driver);
 
+    // OMEGA-IX-R2-001: Reject all new IOCTLs immediately — closes the window
+    // between unload start and WDF queue destruction.
+    extern volatile LONG g_DriverReady;
+    InterlockedExchange(&g_DriverReady, 0);
+
     // OMEGA-II CRIT-03: Prevent new work items FIRST — before any callback unregistration.
     // Without this, in-flight callbacks can queue work items referencing a device about to be deleted.
     SetDeviceObjectForCallbacks(NULL);
 
     AtchPrint(("AtchKernel: EvtDriverUnload - Hủy đăng ký callbacks.\n"));
-    
+
     // Phase 2: Clear exam state FIRST — prevents ObCallback zombie PID log-spam
     // OMEGA-VII-R1-003: Moved before heartbeat wait to close the window where
     // stale PID triggers infinite ScheduleEmergencyCleanup attempts.
@@ -311,6 +336,9 @@ extern "C" void EvtDriverUnload(_In_ WDFDRIVER Driver)
     
 
     UninitializeIoctlQueue();
+
+    // Phase 6: Uninit DMA Protection
+    UninitDmaProtection();
 
     // Phase 7: Free Hypervisor VMXON region (STATIC ANALYSIS FIX C02)
     UninitHypervisorCore();

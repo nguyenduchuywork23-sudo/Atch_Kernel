@@ -5,6 +5,31 @@
 
 #include "../inc/CompileTimeHash.h"
 
+// Hàm helper để tìm chuỗi con không phân biệt chữ hoa/thường
+static BOOLEAN CheckSubstring(PCUNICODE_STRING source, PCWCH substring) {
+    UNICODE_STRING subStr;
+    RtlInitUnicodeString(&subStr, substring);
+
+    if (source->Length < subStr.Length) return FALSE;
+
+    ULONG maxOffset = (source->Length - subStr.Length) / sizeof(WCHAR);
+    for (ULONG i = 0; i <= maxOffset; i++) {
+        BOOLEAN match = TRUE;
+        for (ULONG j = 0; j < subStr.Length / sizeof(WCHAR); j++) {
+            WCHAR c1 = source->Buffer[i + j];
+            WCHAR c2 = subStr.Buffer[j];
+            if (c1 >= L'A' && c1 <= L'Z') c1 += (L'a' - L'A');
+            if (c2 >= L'A' && c2 <= L'Z') c2 += (L'a' - L'A');
+            if (c1 != c2) {
+                match = FALSE;
+                break;
+            }
+        }
+        if (match) return TRUE;
+    }
+    return FALSE;
+}
+
 // Global resolved system directory paths (NT path format)
 static UNICODE_STRING g_SystemRootPath = { 0, 0, NULL };
 static UNICODE_STRING g_SysWow64Path = { 0, 0, NULL };
@@ -15,7 +40,7 @@ static UNICODE_STRING g_WinSxSPath = { 0, 0, NULL };
 static UNICODE_STRING g_MsNetPath = { 0, 0, NULL };
 static UNICODE_STRING g_AssemblyPath = { 0, 0, NULL };
 // OMEGA-II L02: volatile ensures cross-thread visibility of init flag
-static volatile BOOLEAN g_SystemPathsResolved = FALSE;
+static volatile LONG g_SystemPathsResolved = 0;
 
 // Resolve the system root directory from \SystemRoot\ symbolic link
 static NTSTATUS ResolveSystemRootPath()
@@ -124,7 +149,8 @@ static NTSTATUS ResolveSystemRootPath()
         RtlAppendUnicodeToString(&g_AssemblyPath, L"\\assembly\\");
     }
 
-    g_SystemPathsResolved = TRUE;
+    KeMemoryBarrier(); // OMEGA-XIV: Ensure all path buffers are visible before flag publish (ARM64)
+    InterlockedExchange((LONG volatile*)&g_SystemPathsResolved, TRUE);
     AtchPrint(("[Atch_Kernel] Resolved system paths: %wZ, %wZ, WinSxS=%wZ, .NET=%wZ, asm=%wZ\n", &g_SystemRootPath, &g_SysWow64Path, &g_WinSxSPath, &g_MsNetPath, &g_AssemblyPath));
     return STATUS_SUCCESS;
 }
@@ -147,7 +173,8 @@ void LoadImageNotifyRoutine(
             BOOLEAN isSafePath = FALSE;
 
             // Compare full image path against resolved system directories
-            if (g_SystemPathsResolved) {
+            // OMEGA-XIV: Atomic read for ARM64 memory ordering
+            if (InterlockedOr((LONG volatile*)&g_SystemPathsResolved, 0)) {
                 __try {
                     // OMEGA-II CRIT-02: Specific subdirectory whitelist (blocks C:\Windows\Temp)
                     if (RtlPrefixUnicodeString(&g_SystemRootPath, FullImageName, TRUE) ||
@@ -268,7 +295,7 @@ void UnloadImageNotify()
     }
 
     // OMEGA-III: Clear flag BEFORE freeing buffers — prevents in-flight callback access
-    g_SystemPathsResolved = FALSE;
+    InterlockedExchange((LONG volatile*)&g_SystemPathsResolved, 0);
 
     // Free resolved path buffers
     if (g_SystemRootPath.Buffer != NULL) {
@@ -296,5 +323,5 @@ void UnloadImageNotify()
         ExFreePoolWithTag(g_AssemblyPath.Buffer, 'pSLI');
         g_AssemblyPath.Buffer = NULL;
     }
-    g_SystemPathsResolved = FALSE;
+    InterlockedExchange((LONG volatile*)&g_SystemPathsResolved, 0);
 }

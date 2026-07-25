@@ -4,10 +4,11 @@
 #define SHARED_DEF_H
 
 // [OMEGA-VII] Anti-Reversing: Xóa toàn bộ chuỗi tĩnh khỏi file nhị phân khi Build Release
+// [OMEGA-X DELTA] Sửa lỗi biên dịch AtchPrint: Bỏ bọc ngoặc thừa vì code đã gọi AtchPrint((...))
 #ifdef DBG
-#define AtchPrint(fmt, ...) KdPrint(("AtchKernel: " fmt, __VA_ARGS__))
+#define AtchPrint(_x_) KdPrint(_x_)
 #else
-#define AtchPrint(fmt, ...)
+#define AtchPrint(_x_)
 #endif
 
 // Định nghĩa mã Device Type (Nằm trong dải an toàn cho Custom Drivers từ 32768-65535)
@@ -48,8 +49,11 @@ constexpr ULONG ATCH_KERNEL_DEVICE_TYPE = 0x8000;
 // Cấu trúc gói tin dữ liệu truyền tải giữa Ring 3 và Ring 0
 #pragma pack(push, 8)
 typedef struct _EXAM_INIT_DATA {
-    ULONG ClientProcessId;      // PID của phần mềm thi cấp User Mode
-    ULONG SecurityLevelFlags;   // Các cờ cấu hình mức độ bảo mật chủ động
+    // ⚠️ OMEGA-XXII WARNING: DO NOT READ THIS FIELD IN KERNEL.
+    // Driver uses IoGetRequestorProcessId() instead. Reading this field = PID SPOOFING vulnerability.
+    ULONG ClientProcessId_RESERVED;      // Reserved — Ring3 may set this but kernel IGNORES it
+    // ⚠️ OMEGA-XXII WARNING: This field is currently UNUSED. Validate before use.
+    ULONG SecurityLevelFlags;   // Các cờ cấu hình mức độ bảo mật chủ động (RESERVED)
     WCHAR SessionToken[64];     // Chuỗi khóa bảo mật chống tấn công Replay
 } EXAM_INIT_DATA, *PEXAM_INIT_DATA;
 
@@ -63,7 +67,8 @@ enum class ViolationType : ULONG {
     VIOLATION_DLL_INJECTION = 5,
     VIOLATION_DKOM_HIDDEN = 6,
     VIOLATION_HEARTBEAT_TIMEOUT = 7,
-    VIOLATION_MANUAL_MAPPING = 8
+    VIOLATION_MANUAL_MAPPING = 8,
+    VIOLATION_DMA_ATTACK = 9
 };
 #else
 typedef enum _ViolationType {
@@ -74,7 +79,8 @@ typedef enum _ViolationType {
     VIOLATION_DLL_INJECTION = 5,
     VIOLATION_DKOM_HIDDEN = 6,
     VIOLATION_HEARTBEAT_TIMEOUT = 7,
-    VIOLATION_MANUAL_MAPPING = 8
+    VIOLATION_MANUAL_MAPPING = 8,
+    VIOLATION_DMA_ATTACK = 9
 } ViolationType;
 #endif
 
@@ -96,5 +102,14 @@ typedef struct _BLACKLIST_DATA {
     // WCHAR Items[ItemCount][256];
 } BLACKLIST_DATA, *PBLACKLIST_DATA;
 #pragma pack(pop)
+
+// OMEGA-XXIII: ABI guards — compilation fails if struct layout changes.
+// These sizes MUST match between Ring3 and Ring0. Update BOTH sides if changed.
+#ifdef __cplusplus
+static_assert(sizeof(EXAM_INIT_DATA) == 136, "ABI break: EXAM_INIT_DATA size changed — update Ring3");
+static_assert(sizeof(MONITOR_LOG_ENTRY) == 520, "ABI break: MONITOR_LOG_ENTRY size changed — update Ring3");
+static_assert(sizeof(WHITELIST_DATA) == 132, "ABI break: WHITELIST_DATA size changed — update Ring3");
+static_assert(sizeof(BLACKLIST_DATA) == 132, "ABI break: BLACKLIST_DATA size changed — update Ring3");
+#endif
 
 #endif // SHARED_DEF_H

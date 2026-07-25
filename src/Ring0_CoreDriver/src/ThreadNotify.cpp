@@ -9,6 +9,8 @@ static VOID ThreadNotifyCallback(
     _In_ BOOLEAN Create
 )
 {
+    UNREFERENCED_PARAMETER(ThreadId);
+
     if (Create)
     {
         ULONG examClientPid = GetExamClientProcessId();
@@ -27,7 +29,7 @@ static VOID ThreadNotifyCallback(
                 // OMEGA-VII-THREAD-01: Do NOT terminate the System process (PID 4).
                 // Terminating PID 4 causes an instant Bug Check 0xF4 (CRITICAL_OBJECT_TERMINATION).
                 if ((ULONG)(ULONG_PTR)creatorPid != 4) {
-                    ForceKillExamThread(creatorPid, ThreadId);
+                    ForceKillProcess(creatorPid);
                 }
                 
                 LockExam();

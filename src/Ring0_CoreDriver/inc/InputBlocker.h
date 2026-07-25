@@ -4,8 +4,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-    NTSTATUS InitializeInputBlocker();
-    void UninitializeInputBlocker();
+    NTSTATUS InitializeInputBlocker(VOID);
+    void UninitializeInputBlocker(VOID);
 #ifdef __cplusplus
 }
 #endif

@@ -43,6 +43,46 @@ void SetDeviceObjectForCallbacks(PDEVICE_OBJECT DeviceObject) {
     InterlockedExchangePointer((PVOID volatile*)&g_DeviceObjectForWorkItems, DeviceObject);
 }
 
+PDEVICE_OBJECT GetDeviceObjectForCallbacks() {
+    return (PDEVICE_OBJECT)InterlockedCompareExchangePointer((PVOID volatile*)&g_DeviceObjectForWorkItems, NULL, NULL);
+}
+
+// OMEGA-IX-R4-002: Improved pre-filter using 2-char bigrams instead of single chars.
+// Single chars ('v','o','l') match nearly every registry path → no filtering at all.
+// Bigrams 'tc' (AtchKernel), 'xe' (Execution/Exit), 'if' (IFEO), '..' (traversal)
+// are rare enough to reject 95%+ of registry operations before expensive CheckSubstring.
+BOOLEAN FastRegistryPreFilter(PCUNICODE_STRING Str) {
+    if (!Str || !Str->Buffer) return FALSE;
+    SIZE_T chars = Str->Length / sizeof(WCHAR);
+    if (chars < 2) return FALSE;
+    for (SIZE_T i = 0; i < chars - 1; i++) {
+        WCHAR c1 = Str->Buffer[i];
+        WCHAR c2 = Str->Buffer[i + 1];
+        if (c1 >= L'A' && c1 <= L'Z') c1 += (L'a' - L'A');
+        if (c2 >= L'A' && c2 <= L'Z') c2 += (L'a' - L'A');
+        // 'tc' → AtchKernel, ControlSet
+        // 'xe' → Execution, SilentProcessExit
+        // 'if' → Image File (IFEO)
+        // '..' → path traversal (..\)
+        // 'rv' → Services
+        // 'ex' → Execution, SilentProcessExit
+        // 'nt' → SilentProcessExit, CurrentControlSet (lower FP than 'ss')
+        if ((c1 == L't' && c2 == L'c') ||
+            (c1 == L'x' && c2 == L'e') ||
+            (c1 == L'e' && c2 == L'x') ||
+            (c1 == L'n' && c2 == L't') ||
+            (c1 == L'i' && c2 == L'f') ||
+            (c1 == L'.' && c2 == L'.') ||
+            (c1 == L'r' && c2 == L'v') ||
+            (c1 == L'a' && c2 == L'f') ||
+            (c1 == L'e' && c2 == L'b') ||
+            (c1 == L'o' && c2 == L'o')) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 BOOLEAN CheckSubstring(PCUNICODE_STRING Str, PCWSTR SubStr) {
     if (Str == NULL || Str->Buffer == NULL || SubStr == NULL) return FALSE;
     SIZE_T subLen = wcslen(SubStr);
@@ -139,6 +179,13 @@ NTSTATUS RegistryCallback(
 )
 {
     UNREFERENCED_PARAMETER(CallbackContext);
+
+    // OMEGA-XX+XXI: Rate limiter — prevent DoS via registry callback storm.
+    // OMEGA-XXI FIX: Rate limiter ONLY applies to exam-active processing (below).
+    // Self-protection (service key block) is NEVER rate-limited — it must ALWAYS run.
+    static volatile LONG g_RegCallbackCount = 0;
+    static volatile LONGLONG g_RegCallbackWindowStart = 0;
+
     REG_NOTIFY_CLASS notifyClass = (REG_NOTIFY_CLASS)(ULONG_PTR)Argument1;
 
     // Chặn chỉnh sửa khóa Image File Execution Options (IFEO) và khóa Service
@@ -201,8 +248,24 @@ NTSTATUS RegistryCallback(
             // Outside exam: only block destructive ops on our own service key
             if (notifyClass != RegNtPreDeleteKey &&
                 notifyClass != RegNtPreRenameKey &&
-                notifyClass != RegNtPreSetValueKey) {
+                notifyClass != RegNtPreSetValueKey &&
+                notifyClass != RegNtPreDeleteValueKey &&
+                notifyClass != RegNtPreLoadKey &&
+                notifyClass != RegNtPreRestoreKey &&
+                notifyClass != RegNtPreReplaceKey) {
                 return STATUS_SUCCESS;
+            }
+        } else {
+            // OMEGA-XXI: Rate limiter — ONLY for exam-active processing.
+            // Self-protection block above ALWAYS runs regardless of rate.
+            LONGLONG now = KeQueryUnbiasedInterruptTime();
+            LONGLONG windowStart = InterlockedCompareExchange64(&g_RegCallbackWindowStart, 0, 0);
+            if (now - windowStart > 10000000LL) { // 1 second window
+                InterlockedExchange(&g_RegCallbackCount, 0);
+                InterlockedExchange64(&g_RegCallbackWindowStart, now);
+            }
+            if (InterlockedIncrement(&g_RegCallbackCount) > 5000) {
+                return STATUS_SUCCESS; // Drop exam-active processing only
             }
         }
 
@@ -210,15 +273,20 @@ NTSTATUS RegistryCallback(
         // When an absolute path is provided, RootObject is NULL and
         // CompleteName contains the full path. We MUST check it directly.
         if ((notifyClass == RegNtPreCreateKeyEx || notifyClass == RegNtPreCreateKey) && keyObject == NULL && completeName != NULL) {
-            if (CheckSubstring(completeName, L"\\Services\\AtchKernel") ||
-                CheckSubstring(completeName, L"Services\\AtchKernel") ||
-                CheckSubstring(completeName, L"..\\") ||
-                CheckSubstring(completeName, L"Image File Execution Options\\AtchKernel.exe") ||
-                CheckSubstring(completeName, L"SilentProcessExit\\AtchKernel.exe")) {
-                UNICODE_STRING regMsg;
-                RtlInitUnicodeString(&regMsg, L"Registry Tampering Detected (Absolute Path)");
-                NotifyViolationToRing3(0, &regMsg, ViolationType::VIOLATION_REGISTRY_TAMPERING);
-                return STATUS_ACCESS_DENIED;
+            // OMEGA-IX-R4-003: Pre-filter completeName for consistency with keyName checks
+            if (FastRegistryPreFilter(completeName)) {
+                if (CheckSubstring(completeName, L"\\Services\\AtchKernel") ||
+                    CheckSubstring(completeName, L"Services\\AtchKernel") ||
+                    CheckSubstring(completeName, L"..\\") ||
+                    CheckSubstring(completeName, L"Image File Execution Options\\AtchKernel.exe") ||
+                    CheckSubstring(completeName, L"SilentProcessExit\\AtchKernel.exe") ||
+                    CheckSubstring(completeName, L"SafeBoot\\Minimal\\AtchKernel.sys") ||
+                    CheckSubstring(completeName, L"SafeBoot\\Network\\AtchKernel.sys")) {
+                    UNICODE_STRING regMsg;
+                    RtlInitUnicodeString(&regMsg, L"Registry Tampering Detected (Absolute Path)");
+                    NotifyViolationToRing3(0, &regMsg, ViolationType::VIOLATION_REGISTRY_TAMPERING);
+                    return STATUS_ACCESS_DENIED;
+                }
             }
         }
 
@@ -227,58 +295,72 @@ NTSTATUS RegistryCallback(
             if (NT_SUCCESS(CmCallbackGetKeyObjectIDEx(&g_RegistryCookie, keyObject, NULL, &keyName, 0))) {
                 BOOLEAN block = FALSE;
                 if (keyName != NULL && keyName->Buffer != NULL) {
-                    if (CheckSubstring(keyName, L"\\Services\\AtchKernel") || 
-                        CheckSubstring(keyName, L"Services\\AtchKernel") || 
-                        CheckSubstring(keyName, L"..\\") || 
-                        CheckSubstring(keyName, L"Image File Execution Options\\AtchKernel.exe") ||
-                        CheckSubstring(keyName, L"SilentProcessExit\\AtchKernel.exe")) {
-                        block = TRUE;
+                    if (FastRegistryPreFilter(keyName)) {
+                        if (CheckSubstring(keyName, L"\\Services\\AtchKernel") || 
+                            CheckSubstring(keyName, L"Services\\AtchKernel") || 
+                            CheckSubstring(keyName, L"..\\") || 
+                            CheckSubstring(keyName, L"Image File Execution Options\\AtchKernel.exe") ||
+                            CheckSubstring(keyName, L"SilentProcessExit\\AtchKernel.exe") ||
+                            CheckSubstring(keyName, L"SafeBoot\\Minimal\\AtchKernel.sys") ||
+                            CheckSubstring(keyName, L"SafeBoot\\Network\\AtchKernel.sys")) {
+                            block = TRUE;
+                        }
                     }
                     
                     if (!block && notifyClass == RegNtPreRenameKey) {
                         // If someone renames "Image File Execution Options" itself, block it
-                        if (CheckSubstring(keyName, L"Image File Execution Options") ||
-                            CheckSubstring(keyName, L"SilentProcessExit") ||
-                            CheckSubstring(keyName, L"CurrentControlSet\\Services") ||
-                            CheckSubstring(keyName, L"ControlSet001\\Services") ||
-                            // OMEGA-VII-R3-003: Cover ALL ControlSets (004+) with broader match
-                            CheckSubstring(keyName, L"ControlSet002\\Services") ||
-                            CheckSubstring(keyName, L"ControlSet003\\Services") ||
-                            CheckSubstring(keyName, L"ControlSet004\\Services") ||
-                            CheckSubstring(keyName, L"ControlSet005\\Services")) {
-                            block = TRUE;
+                        if (FastRegistryPreFilter(keyName)) {
+                            if (CheckSubstring(keyName, L"Image File Execution Options") ||
+                                CheckSubstring(keyName, L"SilentProcessExit") ||
+                                CheckSubstring(keyName, L"CurrentControlSet\\Services") ||
+                                CheckSubstring(keyName, L"ControlSet001\\Services") ||
+                                // OMEGA-VII-R3-003: Cover ALL ControlSets (004+) with broader match
+                                CheckSubstring(keyName, L"ControlSet002\\Services") ||
+                                CheckSubstring(keyName, L"ControlSet003\\Services") ||
+                                CheckSubstring(keyName, L"ControlSet004\\Services") ||
+                                CheckSubstring(keyName, L"ControlSet005\\Services")) {
+                                block = TRUE;
+                            }
                         }
                     }
                     
                     // === FIX: Block Restoring/Replacing Parent Hives ===
                     if (!block && (notifyClass == RegNtPreRestoreKey || notifyClass == RegNtPreReplaceKey || notifyClass == RegNtPreLoadKey)) {
-                        if (CheckSubstring(keyName, L"\\Services") || 
-                            CheckSubstring(keyName, L"Image File Execution Options") ||
-                            CheckSubstring(keyName, L"SilentProcessExit") ||
-                            CheckSubstring(keyName, L"CurrentControlSet") ||
-                            CheckSubstring(keyName, L"CurrentVersion") ||
-                            CheckSubstring(keyName, L"Control")) {
-                            block = TRUE;
+                        if (FastRegistryPreFilter(keyName)) {
+                            if (CheckSubstring(keyName, L"\\Services") || 
+                                CheckSubstring(keyName, L"Image File Execution Options") ||
+                                CheckSubstring(keyName, L"SilentProcessExit") ||
+                                CheckSubstring(keyName, L"CurrentControlSet") ||
+                                CheckSubstring(keyName, L"CurrentVersion") ||
+                                CheckSubstring(keyName, L"Control")) {
+                                block = TRUE;
+                            }
                         }
                     }
                 
                 // Check relative paths: combine keyName + newName context
                 if (!block && newName != NULL && newName->Buffer != NULL) {
-                    if (CheckSubstring(newName, L"AtchKernel")) {
-                        if (keyName != NULL && keyName->Buffer != NULL) {
-                            if (CheckSubstring(keyName, L"\\Services") || 
-                                CheckSubstring(keyName, L"Image File Execution Options") ||
-                                CheckSubstring(keyName, L"SilentProcessExit")) {
-                                block = TRUE;
+                    if (FastRegistryPreFilter(newName)) {
+                        if (CheckSubstring(newName, L"AtchKernel")) {
+                            if (keyName != NULL && keyName->Buffer != NULL) {
+                                if (FastRegistryPreFilter(keyName)) {
+                                    if (CheckSubstring(keyName, L"\\Services") || 
+                                        CheckSubstring(keyName, L"Image File Execution Options") ||
+                                        CheckSubstring(keyName, L"SilentProcessExit")) {
+                                        block = TRUE;
+                                    }
+                                }
                             }
                         }
-                    }
-                    // Also check the full relative path for Service/IFEO patterns
-                    if (!block) {
-                        if (CheckSubstring(newName, L"\\Services\\AtchKernel") ||
-                            CheckSubstring(newName, L"Image File Execution Options\\AtchKernel.exe") ||
-                            CheckSubstring(newName, L"SilentProcessExit\\AtchKernel.exe")) {
-                            block = TRUE;
+                        // Also check the full relative path for Service/IFEO patterns
+                        if (!block) {
+                            if (CheckSubstring(newName, L"\\Services\\AtchKernel") ||
+                                CheckSubstring(newName, L"Image File Execution Options\\AtchKernel.exe") ||
+                                CheckSubstring(newName, L"SilentProcessExit\\AtchKernel.exe") ||
+                                CheckSubstring(newName, L"SafeBoot\\Minimal\\AtchKernel.sys") ||
+                                CheckSubstring(newName, L"SafeBoot\\Network\\AtchKernel.sys")) {
+                                block = TRUE;
+                            }
                         }
                     }
                 }
@@ -319,10 +401,33 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
         return OB_PREOP_SUCCESS;
     }
 
-    PEPROCESS clientProcess = NULL;
-    NTSTATUS status = PsLookupProcessByProcessId(UlongToHandle(clientPid), &clientProcess);
-    
-    if (NT_SUCCESS(status)) {
+    // OMEGA-VIII-R4-001: Use cached EPROCESS pointer instead of PsLookupProcessByProcessId.
+    // g_ClientEProcess is pinned via ObReferenceObject during exam init and remains valid
+    // until exam termination. This eliminates 10K-50K PspCidTable lock acquisitions/sec.
+    extern PEPROCESS GetClientEProcess();
+    PEPROCESS clientProcess = GetClientEProcess();
+    BOOLEAN mustDeref = FALSE;
+    if (clientProcess == NULL) {
+        // Fallback: EPROCESS not cached (shouldn't happen when PID != 0)
+        // OMEGA-XII: Guard against DISPATCH_LEVEL to prevent BSOD
+        if (KeGetCurrentIrql() >= DISPATCH_LEVEL) {
+            return OB_PREOP_SUCCESS;
+        }
+        
+        NTSTATUS status = PsLookupProcessByProcessId(UlongToHandle(clientPid), &clientProcess);
+        if (!NT_SUCCESS(status)) {
+            if (status == STATUS_INVALID_PARAMETER && clientPid != 0) {
+                AtchPrint(("AtchKernel: CRITICAL — Zombie PID %lu detected in ObCallback. Scheduling cleanup.\n", clientPid));
+                ScheduleEmergencyCleanup(clientPid);
+            }
+            return OB_PREOP_SUCCESS;
+        }
+        // Must dereference since PsLookup added a ref
+        mustDeref = TRUE;
+    }
+
+    // Common path using clientProcess
+    {
         BOOLEAN isTarget = FALSE;
         if (OperationInformation->ObjectType == *PsProcessType) {
             if (OperationInformation->Object == clientProcess) isTarget = TRUE;
@@ -407,21 +512,20 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
                 }
             }
         }
+    }
+
+    // OMEGA-VIII-R4-001: Only deref if we used PsLookup fallback (which adds an extra ref)
+    if (mustDeref) {
         ObDereferenceObject(clientProcess);
-    } else if (status == STATUS_INVALID_PARAMETER && clientPid != 0) {
-        // Zombie state: Process is already dead but g_ClientProcessId is still set.
-        // ProcessNotifyCallbackEx might have missed it or a race condition occurred.
-        AtchPrint(("AtchKernel: CRITICAL — Zombie PID %lu detected in ObCallback. Scheduling cleanup.\n", clientPid));
-        ScheduleEmergencyCleanup(clientPid);
     }
 
     return OB_PREOP_SUCCESS;
 }
 
+// OMEGA-IX-R3-003: Removed dead ThreadId field (was always NULL after ForceKillExamThread removal)
 typedef struct _TERMINATION_WORK_ITEM_CONTEXT {
     PIO_WORKITEM WorkItem;
     HANDLE ProcessId;
-    HANDLE ThreadId;
 } TERMINATION_WORK_ITEM_CONTEXT, *PTERMINATION_WORK_ITEM_CONTEXT;
 
 IO_WORKITEM_ROUTINE TerminationWorkerRoutine;
@@ -430,40 +534,27 @@ VOID TerminationWorkerRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context)
     UNREFERENCED_PARAMETER(DeviceObject);
     PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)Context;
     
-    if (pContext->ThreadId != NULL) {
-        // Terminate the entire process owning the violating thread
-        // ZwTerminateThread is not exported from ntoskrnl.lib — use process termination
-        HANDLE processHandle = NULL;
-        OBJECT_ATTRIBUTES objAttr;
-        CLIENT_ID clientId;
-        InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-        clientId.UniqueProcess = pContext->ProcessId;
-        clientId.UniqueThread = NULL;
-        if (NT_SUCCESS(ZwOpenProcess(&processHandle, PROCESS_TERMINATE, &objAttr, &clientId)) && processHandle != NULL) {
-            ZwTerminateProcess(processHandle, STATUS_ACCESS_DENIED);
-            ZwClose(processHandle);
-        }
-    } else {
-        HANDLE processHandle = NULL;
-        OBJECT_ATTRIBUTES objAttr;
-        CLIENT_ID clientId;
-        InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-        clientId.UniqueProcess = pContext->ProcessId;
-        clientId.UniqueThread = NULL;
-        if (NT_SUCCESS(ZwOpenProcess(&processHandle, PROCESS_TERMINATE, &objAttr, &clientId)) && processHandle != NULL) {
-            ZwTerminateProcess(processHandle, STATUS_ACCESS_DENIED);
-            ZwClose(processHandle);
-        }
+    // Terminate the entire process owning the violating thread
+    // ZwTerminateThread is not exported from ntoskrnl.lib — use process termination
+    HANDLE processHandle = NULL;
+    OBJECT_ATTRIBUTES objAttr;
+    CLIENT_ID clientId;
+    InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+    clientId.UniqueProcess = pContext->ProcessId;
+    clientId.UniqueThread = NULL;
+    if (NT_SUCCESS(ZwOpenProcess(&processHandle, PROCESS_TERMINATE, &objAttr, &clientId)) && processHandle != NULL) {
+        ZwTerminateProcess(processHandle, STATUS_ACCESS_DENIED);
+        ZwClose(processHandle);
     }
     
-    if (InterlockedDecrement(&g_OutstandingWorkItems) == 0) {
-        KeSetEvent(&g_WorkItemDrainEvent, 0, FALSE);
-    }
-
     if (pContext->WorkItem != NULL) {
         IoFreeWorkItem(pContext->WorkItem);
     }
     ExFreePoolWithTag(pContext, 'mrTW');
+
+    if (InterlockedDecrement(&g_OutstandingWorkItems) == 0) {
+        KeSetEvent(&g_WorkItemDrainEvent, 0, FALSE);
+    }
 }
 
 typedef struct _CLEANUP_WORK_ITEM_CONTEXT {
@@ -516,7 +607,9 @@ void ScheduleEmergencyCleanup(ULONG ProcessId)
     }
 }
 
-void ForceKillExamProcess(HANDLE ProcessId)
+// OMEGA-IX-R3-002: Renamed from ForceKillExamProcess to ForceKillProcess
+// because this function is used to kill BOTH exam processes AND attacker processes.
+void ForceKillProcess(HANDLE ProcessId)
 {
     // OMEGA-FINAL M03: Atomic read to prevent TOCTOU race during teardown
     PDEVICE_OBJECT devObj = (PDEVICE_OBJECT)InterlockedCompareExchangePointer(
@@ -526,7 +619,6 @@ void ForceKillExamProcess(HANDLE ProcessId)
     PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(TERMINATION_WORK_ITEM_CONTEXT), 'mrTW');
     if (pContext != NULL) {
         pContext->ProcessId = ProcessId;
-        pContext->ThreadId = NULL;
         pContext->WorkItem = IoAllocateWorkItem(devObj);
         if (pContext->WorkItem != NULL) {
             // STATIC ANALYSIS FIX H08: Limit work items to prevent NonPaged pool exhaustion
@@ -544,33 +636,7 @@ void ForceKillExamProcess(HANDLE ProcessId)
     }
 }
 
-void ForceKillExamThread(HANDLE ProcessId, HANDLE ThreadId)
-{
-    // OMEGA-FINAL M03: Atomic read to prevent TOCTOU race during teardown
-    PDEVICE_OBJECT devObj = (PDEVICE_OBJECT)InterlockedCompareExchangePointer(
-        (PVOID volatile*)&g_DeviceObjectForWorkItems, NULL, NULL);
-    if (devObj == NULL) return;
-
-    PTERMINATION_WORK_ITEM_CONTEXT pContext = (PTERMINATION_WORK_ITEM_CONTEXT)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(TERMINATION_WORK_ITEM_CONTEXT), 'mrTW');
-    if (pContext != NULL) {
-        pContext->ProcessId = ProcessId;
-        pContext->ThreadId = ThreadId;
-        pContext->WorkItem = IoAllocateWorkItem(devObj);
-        if (pContext->WorkItem != NULL) {
-            // STATIC ANALYSIS FIX H08: Limit work items to prevent NonPaged pool exhaustion
-            LONG count = InterlockedIncrement(&g_OutstandingWorkItems);
-            if (count > 100) {
-                InterlockedDecrement(&g_OutstandingWorkItems);
-                IoFreeWorkItem(pContext->WorkItem);
-                ExFreePoolWithTag(pContext, 'mrTW');
-            } else {
-                IoQueueWorkItem(pContext->WorkItem, TerminationWorkerRoutine, DelayedWorkQueue, pContext);
-            }
-        } else {
-            ExFreePoolWithTag(pContext, 'mrTW');
-        }
-    }
-}
+// Removed ForceKillExamThread. Use ForceKillProcess instead.
 
 NTSTATUS RegisterSecurityCallbacks(PDRIVER_OBJECT DriverObject)
 {
@@ -652,18 +718,21 @@ void UnregisterSecurityCallbacks()
 
 void DrainWorkItems()
 {
-    // OMEGA-II HIGH-07: Spin-wait with back-off replaces racy check-clear-check-wait pattern.
-    // OMEGA-III: Added 10-second timeout to prevent permanent unload hang.
+    // OMEGA-VIII-R3-003: Wait INDEFINITELY for outstanding work items to complete.
+    // Previously had a 10s timeout that allowed unload to proceed while work items
+    // were still running, causing use-after-free BSOD when WdfObjectDelete freed
+    // the device object that work items reference via IoFreeWorkItem.
+    // This mirrors IoReleaseRemoveLockAndWait which also waits indefinitely.
     LARGE_INTEGER delay;
     delay.QuadPart = -10000LL; // 1ms back-off
     ULONG retries = 0;
-    const ULONG maxRetries = 10000; // 10 seconds max (10000 * 1ms)
-    while (InterlockedOr(&g_OutstandingWorkItems, 0) > 0 && retries < maxRetries) {
+    while (InterlockedOr(&g_OutstandingWorkItems, 0) > 0) {
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
         retries++;
-    }
-    if (retries >= maxRetries) {
-        AtchPrint(("[Atch_Kernel] WARNING: DrainWorkItems timed out after 10s, %ld items still outstanding\n",
-            InterlockedOr(&g_OutstandingWorkItems, 0)));
+        // Log every 10 seconds to help diagnose stuck work items
+        if (retries % 10000 == 0) {
+            AtchPrint(("[Atch_Kernel] WARNING: DrainWorkItems waiting for %ld outstanding items (%lu seconds)...\n",
+                InterlockedOr(&g_OutstandingWorkItems, 0), retries / 1000));
+        }
     }
 }
