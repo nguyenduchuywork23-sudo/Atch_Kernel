@@ -26,7 +26,7 @@ bool DriverController::Open()
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,                // Security attributes mặc định
         OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
         nullptr);
 
     if (m_hDevice == INVALID_HANDLE_VALUE) {
@@ -61,6 +61,10 @@ bool DriverController::Ioctl(DWORD ctlCode,
     if (m_hDevice == INVALID_HANDLE_VALUE)
         return false;
 
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return false;
+
     DWORD dwReturned = 0;
     BOOL ok = DeviceIoControl(
         m_hDevice,
@@ -68,7 +72,11 @@ bool DriverController::Ioctl(DWORD ctlCode,
         inBuf,  inSize,
         outBuf, outSize,
         &dwReturned,
-        nullptr);  // Synchronous call (không dùng OVERLAPPED)
+        &ov);
+
+    if (!ok && GetLastError() == ERROR_IO_PENDING) {
+        ok = GetOverlappedResult(m_hDevice, &ov, &dwReturned, TRUE);
+    }
 
     if (ok == FALSE) {
         LOG_ERR("DriverController: IOCTL " + std::to_string(ctlCode) + " failed with error " + std::to_string(GetLastError()));
@@ -79,6 +87,7 @@ bool DriverController::Ioctl(DWORD ctlCode,
     if (bytesReturned)
         *bytesReturned = dwReturned;
 
+    CloseHandle(ov.hEvent);
     return ok == TRUE;
 }
 
@@ -164,10 +173,25 @@ bool DriverController::ListenForEvent(const WCHAR* sessionToken, MONITOR_LOG_ENT
     if (sessionToken)
         wcsncpy_s(data.SessionToken, sessionToken, 63);
 
-    return Ioctl(IOCTL_AK_LISTEN_EVENT,
-                 &data, sizeof(data),
-                 &outEntry, sizeof(outEntry),
-                 &bytesReturned);
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return false;
+
+    BOOL ok = DeviceIoControl(
+        m_hDevice,
+        IOCTL_AK_LISTEN_EVENT,
+        &data, sizeof(data),
+        &outEntry, sizeof(outEntry),
+        &bytesReturned,
+        &ov);
+
+    if (!ok && GetLastError() == ERROR_IO_PENDING) {
+        // Chờ Inverted Call hoàn thành (Overlapped I/O)
+        ok = GetOverlappedResult(m_hDevice, &ov, &bytesReturned, TRUE);
+    }
+
+    CloseHandle(ov.hEvent);
+    return ok == TRUE;
 }
 
 // ─── IOCTL_AK_UNLOCK_EXAM ─────────────────────────────────────────────────

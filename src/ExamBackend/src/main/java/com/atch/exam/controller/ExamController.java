@@ -30,7 +30,7 @@ public class ExamController {
         if (session.getUser() == null) {
             throw new org.springframework.security.access.AccessDeniedException("Session has no associated user.");
         }
-        if (auth == null || !auth.getName().equals(session.getUser().getUsername())) {
+        if (auth == null || !auth.isAuthenticated() || !auth.getName().equals(session.getUser().getUsername())) {
             return ResponseEntity.status(403).body("Forbidden: You cannot submit someone else's exam.");
         }
         

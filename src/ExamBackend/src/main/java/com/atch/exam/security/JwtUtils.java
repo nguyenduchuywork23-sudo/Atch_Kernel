@@ -17,7 +17,7 @@ import java.util.function.Function;
 @Component
 public class JwtUtils {
 
-    @Value("${jwt.secret:defaultSecretForJwtWhichMustBeLongEnoughForHS256Signature1234567890}")
+    @Value("${jwt.secret}")
     private String secret;
     private SecretKey key;
     private final java.util.Set<String> blacklistedTokens = java.util.concurrent.ConcurrentHashMap.newKeySet();

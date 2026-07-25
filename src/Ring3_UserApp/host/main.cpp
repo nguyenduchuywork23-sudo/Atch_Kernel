@@ -129,6 +129,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     }
     
     LOG_INFO("Reaching Step 2...");
+    
+    // ─── Tạo Môi trường Cách ly (Secure Desktop) ──────────────────────────────
+    HDESK hSecureDesktop = CreateDesktopW(L"AtchSecureDesktop", NULL, NULL, 0, GENERIC_ALL, NULL);
+    if (hSecureDesktop) {
+        SwitchDesktop(hSecureDesktop);
+        SetThreadDesktop(hSecureDesktop);
+        LOG_INFO("Switched to Secure Desktop.");
+    } else {
+        LOG_WARN("Failed to create Secure Desktop.");
+    }
+
     // ─── Bước 2: Tạo cửa sổ Win32 Borderless ─────────────────────────────────
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
@@ -271,12 +282,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     IntegrityChecker integrityChecker(OnIntegrityFail);
     integrityChecker.Start(3000); // Kiểm tra mỗi 3 giây
 
-    // Thread 2: HeartbeatManager – gửi nhịp tim xuống Kernel mỗi 5 giây
+    // Thread 2: HeartbeatManager – gửi nhịp tim xuống Kernel mỗi 1 giây
     std::unique_ptr<HeartbeatManager> heartbeat;
     if (driverOk) {
         heartbeat = std::make_unique<HeartbeatManager>(
             g_driver, g_sessionToken, OnHeartbeatFail);
-        heartbeat->Start(5000);
+        heartbeat->Start(1000);
     }
 
     // Thread 3: DynamicScanner – Ring-3 First Verification
@@ -340,6 +351,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         if (t.joinable()) {
             t.join();
         }
+    }
+
+    // Phục hồi desktop
+    if (hSecureDesktop) {
+        HDESK hDefault = OpenDesktopW(L"default", 0, FALSE, GENERIC_ALL);
+        if (hDefault) {
+            SwitchDesktop(hDefault);
+            SetThreadDesktop(hDefault);
+            CloseDesktop(hDefault);
+        }
+        CloseDesktop(hSecureDesktop);
     }
 
     LOG_INFO("Shutdown complete.");
