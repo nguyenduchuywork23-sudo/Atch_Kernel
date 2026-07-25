@@ -141,18 +141,17 @@ void DynamicScanner::RunScanLoop(DWORD intervalMs)
         auto processes = SnapshotRunningProcesses();
         if (++cycles > 60) {
             std::lock_guard<std::mutex> lk(m_mutex);
-            std::vector<DWORD> toRemove;
-            for (auto const& pair : m_scannedPids) {
-                bool found = false;
-                for (auto& pe : processes) {
-                    if (pe.th32ProcessID == pair.first) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) toRemove.push_back(pair.first);
+            std::unordered_set<DWORD> currentPids;
+            for (auto& pe : processes) {
+                currentPids.insert(pe.th32ProcessID);
             }
-            for (auto pid : toRemove) m_scannedPids.erase(pid);
+            for (auto it = m_scannedPids.begin(); it != m_scannedPids.end(); ) {
+                if (currentPids.find(it->first) == currentPids.end()) {
+                    it = m_scannedPids.erase(it);
+                } else {
+                    ++it;
+                }
+            }
             cycles = 0;
             LOG_INFO("DynamicScanner: Cleaned up terminated processes from cache.");
         }
@@ -238,7 +237,7 @@ void DynamicScanner::RunScanLoop(DWORD intervalMs)
                 m_scannedPids[pid] = ftCreation;
                 m_history.push_back(rec);
                 if (m_history.size() > 1000) {
-                    m_history.erase(m_history.begin(), m_history.begin() + 100);
+                    m_history.clear(); // Clear all to avoid memory build up
                 }
             }
         }

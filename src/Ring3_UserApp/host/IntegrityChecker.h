@@ -52,6 +52,8 @@ public:
     // Kiểm tra CRC hiện tại có khớp với ban đầu không
     bool ValidateChecksum();
 
+    void CacheIAT();
+
 private:
     void RunChecks();
     DWORD ComputeRegionCRC32(const BYTE* data, SIZE_T len);
@@ -59,6 +61,8 @@ private:
     IntegrityViolationCallback m_callback;
     std::atomic<bool> m_running{ false };
     std::thread m_thread;
+
+    std::vector<PVOID> m_cachedIAT;
 
     // Danh sách module hợp lệ được chụp lại khi khởi động
     std::vector<std::wstring> m_whitelistedModules;

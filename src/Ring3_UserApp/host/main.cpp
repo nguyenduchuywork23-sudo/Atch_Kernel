@@ -100,7 +100,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     if (argv && argc > 1) {
         g_sessionToken = argv[1];
     } else {
-        g_sessionToken = L"ATCH_SESSION_2026_XYZ";
+        LOG_ERR("No session token provided. Exiting.");
+        if (argv) LocalFree(argv);
+        return 1;
     }
     if (argv) LocalFree(argv);
 
@@ -230,8 +232,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                                         if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
                                             std::wstring wUri = uri;
                                             // Chỉ cho phép localhost (React App) và itest.cmcu.edu.vn (Bài thi)
-                                            if (wUri.find(L"http://localhost:5173") != 0 && 
-                                                wUri.find(L"https://itest.cmcu.edu.vn") != 0) {
+                                            if (wUri.find(L"http://localhost:5173/") != 0 && wUri != L"http://localhost:5173" &&
+                                                wUri.find(L"https://itest.cmcu.edu.vn/") != 0 && wUri != L"https://itest.cmcu.edu.vn") {
                                                 args->put_Cancel(TRUE); // Chặn điều hướng
                                                 LOG_WARN(L"Blocked unauthorized navigation to: " + wUri);
                                             }
@@ -489,19 +491,26 @@ void HandleReactMessage(const std::wstring& json)
         }
     }
     else if (json.find(L"KILL_PROCESS") != std::wstring::npos) {
-        std::wregex pidRegex(L"\"pid\"\\s*:\\s*(\\d+)");
-        std::wsmatch match;
-        if (std::regex_search(json, match, pidRegex)) {
-            try {
-                DWORD pid = std::stoul(match[1].str());
-                HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-                if (hProc) {
-                    TerminateProcess(hProc, 1);
-                    CloseHandle(hProc);
-                    LOG_INFO("Killed process " + std::to_string(pid) + " via React request.");
+        size_t pos = json.find(L"\"pid\"");
+        if (pos != std::wstring::npos) {
+            size_t colon = json.find(L":", pos);
+            if (colon != std::wstring::npos) {
+                size_t start = json.find_first_of(L"0123456789", colon);
+                size_t end = json.find_first_not_of(L"0123456789", start);
+                if (start != std::wstring::npos) {
+                    std::wstring pidStr = json.substr(start, end - start);
+                    try {
+                        DWORD pid = std::stoul(pidStr);
+                        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+                        if (hProc) {
+                            TerminateProcess(hProc, 1);
+                            CloseHandle(hProc);
+                            LOG_INFO("Killed process " + std::to_string(pid) + " via React request.");
+                        }
+                    } catch (...) {
+                        LOG_ERR("Invalid PID format from React UI.");
+                    }
                 }
-            } catch (...) {
-                LOG_ERR("Invalid PID format from React UI.");
             }
         }
     }

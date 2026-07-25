@@ -60,6 +60,7 @@ void IntegrityChecker::Start(DWORD intervalMs)
     ComputeInitialChecksum();
     LOG_INFO("IntegrityChecker: Computed text section checksum.");
 
+    CacheIAT();
     ErasePEHeader();
     LOG_INFO("IntegrityChecker: Erased PE Header (Anti-Dump).");
 
@@ -260,7 +261,7 @@ bool IntegrityChecker::IsAdvancedDebuggerAttached()
     unsigned __int64 tsc2 = __rdtsc();
     
     // Nếu tsc2 - tsc1 quá lớn (ví dụ > 0xFFFFFFFF), rất có thể đang bị trace
-    if ((tsc2 - tsc1) > 0xFFFFFFFFULL) {
+    if ((tsc2 - tsc1) > 0xFFFFFFFFFFULL) {
         return true;
     }
 
@@ -403,17 +404,19 @@ bool IntegrityChecker::IsParentProcessLegitimate()
     std::wstring nameStr(parentName);
     for (auto& c : nameStr) c = towlower(c);
 
+    WCHAR winDir[MAX_PATH]{};
+    GetWindowsDirectoryW(winDir, MAX_PATH);
+    std::wstring winDirStr(winDir);
+    for (auto& c : winDirStr) c = towlower(c);
+
     // Danh sách tiến trình cha được chấp nhận (launcher hợp lệ)
-    const wchar_t* kAllowedParents[] = {
-        L"c:\\windows\\explorer.exe",
-        L"c:\\windows\\system32\\cmd.exe",
-        L"c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe",
-        L"c:\\program files\\powershell\\7\\pwsh.exe"
-        // Thêm launcher chính thức ở đây
-    };
-    for (auto& ap : kAllowedParents) {
-        if (nameStr == ap)
-            return true;
+    std::wstring allowed1 = winDirStr + L"\\explorer.exe";
+    std::wstring allowed2 = winDirStr + L"\\system32\\cmd.exe";
+    std::wstring allowed3 = winDirStr + L"\\system32\\windowspowershell\\v1.0\\powershell.exe";
+    std::wstring allowed4 = L"c:\\program files\\powershell\\7\\pwsh.exe";
+    
+    if (nameStr == allowed1 || nameStr == allowed2 || nameStr == allowed3 || nameStr == allowed4) {
+        return true;
     }
 
     // Tiến trình cha không phải từ danh sách trắng → cảnh báo
@@ -512,33 +515,8 @@ bool IntegrityChecker::IsBlacklistedWindowVisible()
 }
 
 // ─── [CHECK 8] Phát hiện máy ảo (Anti-VM) qua CPUID ───────────────────────
-bool IntegrityChecker::IsRunningInVirtualMachine()
-{
-    int cpuInfo[4] = { 0 };
-    // Gọi CPUID với EAX=1
-    __cpuid(cpuInfo, 1);
-    
-    // Bỏ qua kiểm tra Hyper-V flag để tránh false positive trên Windows 11 VBS
-    // if ((cpuInfo[2] & (1 << 31)) != 0) { ... }
-    
-    // Kiểm tra các Artifacts của máy ảo phổ biến
-    const wchar_t* vmFiles[] = {
-        L"C:\\Windows\\System32\\drivers\\VBoxMouse.sys",
-        L"C:\\Windows\\System32\\drivers\\VBoxGuest.sys",
-        L"C:\\Windows\\System32\\drivers\\vboxvideo.sys",
-        L"C:\\Windows\\System32\\vmtoolsd.exe",
-        L"C:\\Windows\\System32\\drivers\\vmmouse.sys",
-        L"C:\\Windows\\System32\\drivers\\vmhgfs.sys"
-    };
-
-    for (const auto& file : vmFiles) {
-        if (GetFileAttributesW(file) != INVALID_FILE_ATTRIBUTES) {
-            return true;
-        }
-    }
-
+    // Removed CPUID VM check to prevent false positives on Windows 11 VBS
     return false;
-}
 
 // ─── [CHECK 9] Phát hiện Remote Desktop ───────────────────────────────────
 bool IntegrityChecker::IsRemoteSessionActive()
@@ -711,25 +689,22 @@ bool IntegrityChecker::HasIllegalThreads()
     return found;
 }
 
-bool IntegrityChecker::CheckIATIntegrity()
+void IntegrityChecker::CacheIAT()
 {
     HMODULE hSelf = GetModuleHandleW(nullptr);
-    if (!hSelf) return false;
+    if (!hSelf) return;
 
     auto* pDosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(hSelf);
-    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return;
 
     auto* pNtHeader = reinterpret_cast<PIMAGE_NT_HEADERS>(
         reinterpret_cast<BYTE*>(hSelf) + pDosHeader->e_lfanew);
     
     IMAGE_DATA_DIRECTORY impDir = pNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (impDir.VirtualAddress == 0) return false;
+    if (impDir.VirtualAddress == 0) return;
 
     auto* pImportDesc = reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(
         reinterpret_cast<BYTE*>(hSelf) + impDir.VirtualAddress);
-
-    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-    auto pNtQVM = hNtdll ? reinterpret_cast<pfnNtQueryVirtualMemory>(GetProcAddress(hNtdll, "NtQueryVirtualMemory")) : nullptr;
 
     while (pImportDesc->Name != 0) {
         auto* pThunk = reinterpret_cast<PIMAGE_THUNK_DATA>(
@@ -737,37 +712,50 @@ bool IntegrityChecker::CheckIATIntegrity()
         
         while (pThunk->u1.Function != 0) {
             PVOID funcAddr = reinterpret_cast<PVOID>(pThunk->u1.Function);
-            
-            MEMORY_BASIC_INFORMATION mbi{};
-            bool success = false;
-            if (pNtQVM) {
-                SIZE_T retLen = 0;
-                success = NT_SUCCESS(pNtQVM(GetCurrentProcess(), funcAddr, 0, &mbi, sizeof(mbi), &retLen));
-            } else {
-                success = (VirtualQuery(funcAddr, &mbi, sizeof(mbi)) != 0);
-            }
-
-            if (success) {
-                WCHAR modName[MAX_PATH]{};
-                if (GetModuleFileNameExW(GetCurrentProcess(), mbi.AllocationBase, modName, MAX_PATH)) {
-                    std::wstring wModName = modName;
-                    for (auto& c : wModName) c = towlower(c);
-                    
-                    if (wModName.find(L"\\windows\\") == std::wstring::npos && 
-                        wModName.find(L"\\system32\\") == std::wstring::npos &&
-                        wModName.find(L"\\syswow64\\") == std::wstring::npos &&
-                        wModName.find(L"\\system\\") == std::wstring::npos &&
-                        (PVOID)hSelf != mbi.AllocationBase) {
-                        LOG_WARN(L"IntegrityChecker: IAT Hook detected: " + wModName);
-                        return true; 
-                    }
-                } else {
-                    return true; // Unbacked memory (Hook)
-                }
-            }
+            m_cachedIAT.push_back(funcAddr);
             pThunk++;
         }
         pImportDesc++;
+    }
+}
+
+bool IntegrityChecker::CheckIATIntegrity()
+{
+    if (m_cachedIAT.empty()) return false;
+    HMODULE hSelf = GetModuleHandleW(nullptr);
+    if (!hSelf) return false;
+
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    auto pNtQVM = hNtdll ? reinterpret_cast<pfnNtQueryVirtualMemory>(GetProcAddress(hNtdll, "NtQueryVirtualMemory")) : nullptr;
+
+    for (PVOID funcAddr : m_cachedIAT) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        bool success = false;
+        if (pNtQVM) {
+            SIZE_T retLen = 0;
+            success = NT_SUCCESS(pNtQVM(GetCurrentProcess(), funcAddr, 0, &mbi, sizeof(mbi), &retLen));
+        } else {
+            success = (VirtualQuery(funcAddr, &mbi, sizeof(mbi)) != 0);
+        }
+
+        if (success) {
+            WCHAR modName[MAX_PATH]{};
+            if (GetModuleFileNameExW(GetCurrentProcess(), mbi.AllocationBase, modName, MAX_PATH)) {
+                std::wstring wModName = modName;
+                for (auto& c : wModName) c = towlower(c);
+                
+                if (wModName.find(L"\\windows\\") == std::wstring::npos && 
+                    wModName.find(L"\\system32\\") == std::wstring::npos &&
+                    wModName.find(L"\\syswow64\\") == std::wstring::npos &&
+                    wModName.find(L"\\system\\") == std::wstring::npos &&
+                    (PVOID)hSelf != mbi.AllocationBase) {
+                    LOG_WARN(L"IntegrityChecker: IAT Hook detected: " + wModName);
+                    return true; 
+                }
+            } else {
+                return true; // Unbacked memory (Hook)
+            }
+        }
     }
     return false;
 }
