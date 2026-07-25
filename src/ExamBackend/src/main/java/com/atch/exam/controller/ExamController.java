@@ -25,6 +25,13 @@ public class ExamController {
         if (session == null) {
             return ResponseEntity.badRequest().body("Session not found");
         }
+
+        org.springframework.security.core.Authentication auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && session.getUser() != null) {
+            if (!auth.getName().equals(session.getUser().getUsername())) {
+                return ResponseEntity.status(403).body("Forbidden: You cannot submit someone else's exam.");
+            }
+        }
         
         if (session.getStartTime() != null) {
             long minutesSinceStart = Duration.between(session.getStartTime(), LocalDateTime.now()).toMinutes();

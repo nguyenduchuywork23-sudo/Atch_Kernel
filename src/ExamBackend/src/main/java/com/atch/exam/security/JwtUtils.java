@@ -7,7 +7,7 @@ import io.jsonwebtoken.security.Keys;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
 
-import java.security.Key;
+import javax.crypto.SecretKey;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -18,7 +18,7 @@ public class JwtUtils {
 
     // Ideally, this should be in application.properties
     private final String SECRET = "thisIsASecretKeyForJwtWhichMustBeLongEnoughForHS256Signature1234567890";
-    private final Key key = Keys.hmacShaKeyFor(SECRET.getBytes());
+    private final SecretKey key = Keys.hmacShaKeyFor(SECRET.getBytes());
     
     public String extractUsername(String token) {
         return extractClaim(token, Claims::getSubject);
@@ -34,7 +34,7 @@ public class JwtUtils {
     }
 
     private Claims extractAllClaims(String token) {
-        return Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(token).getBody();
+        return Jwts.parser().verifyWith(key).build().parseSignedClaims(token).getPayload();
     }
 
     private Boolean isTokenExpired(String token) {
@@ -49,7 +49,7 @@ public class JwtUtils {
     private String createToken(Map<String, Object> claims, String subject) {
         return Jwts.builder().setClaims(claims).setSubject(subject).setIssuedAt(new Date(System.currentTimeMillis()))
                 .setExpiration(new Date(System.currentTimeMillis() + 1000 * 60 * 60 * 10)) // 10 hours
-                .signWith(key, SignatureAlgorithm.HS256).compact();
+                .signWith(key).compact();
     }
 
     public Boolean validateToken(String token, UserDetails userDetails) {

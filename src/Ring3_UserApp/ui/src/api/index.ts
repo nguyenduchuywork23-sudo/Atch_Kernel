@@ -48,8 +48,8 @@ export const submitExam = async (examId: string, answers: any) => {
   return response.json();
 };
 
-export const getSessions = async () => {
-  const response = await fetch(`${API_BASE_URL}/teacher/students/search?query=`, { headers: getAuthHeaders() });
+export const getSessions = async (signal?: AbortSignal) => {
+  const response = await fetch(`${API_BASE_URL}/teacher/students/search?query=`, { headers: getAuthHeaders(), signal });
   if (!response.ok) throw new Error('Failed to fetch sessions');
   const data = await response.json();
   return data.map((u: any) => ({
@@ -59,8 +59,8 @@ export const getSessions = async () => {
   }));
 };
 
-export const getLogs = async () => {
-  const response = await fetch(`${API_BASE_URL}/teacher/logs/1`, { headers: getAuthHeaders() });
+export const getLogs = async (signal?: AbortSignal) => {
+  const response = await fetch(`${API_BASE_URL}/teacher/logs/1`, { headers: getAuthHeaders(), signal });
   if (!response.ok) throw new Error('Failed to fetch logs');
   const data = await response.json();
   return data.map((log: any) => ({

@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$WorkingDir = "C:\Users\Asus\Atch_Kernel\src\Ring3_UserApp"
+$WorkingDir = $PSScriptRoot
 Set-Location $WorkingDir
 
 Write-Host "1. Installing WebView2 SDK via NuGet..."

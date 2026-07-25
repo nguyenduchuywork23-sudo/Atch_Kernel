@@ -148,14 +148,17 @@ bool DriverController::UpdateBlacklist(const WCHAR* sessionToken,
 }
 
 // ─── IOCTL_AK_LISTEN_EVENT (Blocking Inverted Call) ───────────────────────
-bool DriverController::ListenForEvent(MONITOR_LOG_ENTRY& outEntry)
+bool DriverController::ListenForEvent(const WCHAR* sessionToken, MONITOR_LOG_ENTRY& outEntry)
 {
-    // Gọi IOCTL này sẽ CHẶN cho đến khi Kernel có sự kiện để gửi.
-    // Vì vậy, hàm này phải được gọi từ một thread riêng.
     memset(&outEntry, 0, sizeof(outEntry));
     DWORD bytesReturned = 0;
+    
+    WHITELIST_DATA data{};
+    if (sessionToken)
+        wcsncpy_s(data.SessionToken, sessionToken, 63);
+
     return Ioctl(IOCTL_AK_LISTEN_EVENT,
-                 nullptr, 0,
+                 &data, sizeof(data),
                  &outEntry, sizeof(outEntry),
                  &bytesReturned);
 }

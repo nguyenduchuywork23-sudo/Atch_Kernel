@@ -51,8 +51,8 @@ void IntegrityChecker::Start(DWORD intervalMs)
     ComputeInitialChecksum();
     LOG_INFO("IntegrityChecker: Computed text section checksum.");
 
-    // ErasePEHeader();
-    // LOG_INFO("IntegrityChecker: Erased PE Header (Anti-Dump).");
+    ErasePEHeader();
+    LOG_INFO("IntegrityChecker: Erased PE Header (Anti-Dump).");
 
     m_running = true;
     m_thread = std::thread([this, intervalMs]() {
@@ -92,10 +92,10 @@ void IntegrityChecker::RunChecks()
     }
 
     // [CHECK 3] DLL Injection: Có module lạ nào được nạp không?
-    // if (HasUnknownModulesInjected()) {
-    //     m_callback(L"INTEGRITY_FAIL: Unknown DLL injected into process");
-    //     return;
-    // }
+    if (HasUnknownModulesInjected()) {
+        m_callback(L"INTEGRITY_FAIL: Unknown DLL injected into process");
+        return;
+    }
 
     // [CHECK 4] Parent Process: Tiến trình cha có hợp lệ không?
     if (!IsParentProcessLegitimate()) {

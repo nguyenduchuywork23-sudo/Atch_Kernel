@@ -63,10 +63,10 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             block = true;
         }
         
-        // [DEV ONLY] Ctrl + Q để thoát khẩn cấp khi bị treo
-        if (p->vkCode == 'Q' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
-            PostQuitMessage(0);
-        }
+        // [DEV ONLY] Đóng backdoor Ctrl+Q
+        // if (p->vkCode == 'Q' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+        //     PostQuitMessage(0);
+        // }
 
         if (block) return 1; // Ngăn chặn sự kiện phím
     }
@@ -83,6 +83,9 @@ void HandleReactMessage(const std::wstring& json);
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 
 #include <stdio.h>
+#include <vector>
+
+std::vector<std::thread> g_bgThreads;
 
 int main() {
     printf("Main started!\n");
@@ -158,7 +161,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     LOG_INFO("Reaching Step 3 (WebView2)...");
     // ─── Bước 3: Khởi tạo WebView2 (async) ──────────────────────────────────
     auto options = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
-    options->put_AdditionalBrowserArguments(L"--disable-web-security --disable-features=IsolateOrigins,site-per-process");
+    options->put_AdditionalBrowserArguments(L"");
 
     CreateCoreWebView2EnvironmentWithOptions(
         nullptr, nullptr, options.Get(),
@@ -233,14 +236,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
                             // Báo cho React biết driver đã sẵn sàng
                             // (delay nhỏ để React render xong trước)
-                            std::thread([]() {
+                            g_bgThreads.emplace_back([]() {
                                 std::this_thread::sleep_for(std::chrono::seconds(1));
                                 // Nếu driver kết nối được → báo READY, nếu không → báo LOST
                                 if (g_driver.IsOpen())
                                     g_bridge.NotifyDriverReady();
                                 else
                                     g_bridge.NotifyDriverLost();
-                            }).detach();
+                            });
 
                             return S_OK;
                         })
@@ -277,7 +280,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         StartEventListenerThread();
 
     // Thread 5: Telemetry stats
-    std::thread([]() {
+    g_bgThreads.emplace_back([]() {
         while (g_running.load()) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             // Simulate reading system stats
@@ -286,7 +289,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             int fakeProcs = 140 + (rand() % 10);
             g_bridge.NotifySystemStats(fakeCpu, fakeRam, fakeProcs);
         }
-    }).detach();
+    });
 
     // ─── Bước 5: Message Loop chính của Win32 ────────────────────────────────
     MSG msg{};
@@ -318,6 +321,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
     if (g_kbdHook) UnhookWindowsHookEx(g_kbdHook);
     CoUninitialize();
+
+    // Dọn dẹp các thread nền
+    for (auto& t : g_bgThreads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
     LOG_INFO("Shutdown complete.");
     return 0;
 }
@@ -385,11 +396,11 @@ void OnIntegrityFail(const std::wstring& reason)
     // Báo cho React UI biết lỗi gì
     g_bridge.NotifyIntegrityFail(reason);
     
-    // Tạm thời KHÔNG exit để xem được lỗi trên màn hình đỏ
+    // Bắt buộc exit để ngăn gian lận
     if (g_driver.IsOpen())
         g_driver.TerminateExam(kSessionToken);
-    // g_running = false;
-    // PostQuitMessage(0);
+    g_running = false;
+    PostQuitMessage(0);
 }
 
 // ─── Heartbeat thất bại ────────────────────────────────────────────────────────
@@ -404,18 +415,18 @@ void OnHeartbeatFail()
 // ─── Thread lắng nghe sự kiện từ Kernel (Inverted Call) ───────────────────────
 void StartEventListenerThread()
 {
-    std::thread([]() {
+    g_bgThreads.emplace_back([]() {
         while (g_running.load()) {
             MONITOR_LOG_ENTRY entry{};
             // Blocking call – trả về khi Kernel có sự kiện
-            if (g_driver.ListenForEvent(entry)) {
+            if (g_driver.ListenForEvent(kSessionToken, entry)) {
                 OnKernelViolation(entry);
             } else {
                 // IOCTL thất bại → driver có thể bị unload
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             }
         }
-    }).detach();
+    });
 }
 
 // ─── Xử lý message từ React ────────────────────────────────────────────────────
@@ -451,12 +462,16 @@ void HandleReactMessage(const std::wstring& json)
                 else break;
             }
             if (!pidStr.empty()) {
-                DWORD pid = std::stoul(pidStr);
-                HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-                if (hProc) {
-                    TerminateProcess(hProc, 1);
-                    CloseHandle(hProc);
-                    LOG_INFO("Killed process " + std::to_string(pid) + " via React request.");
+                try {
+                    DWORD pid = std::stoul(pidStr);
+                    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+                    if (hProc) {
+                        TerminateProcess(hProc, 1);
+                        CloseHandle(hProc);
+                        LOG_INFO("Killed process " + std::to_string(pid) + " via React request.");
+                    }
+                } catch (...) {
+                    LOG_ERR("Invalid PID format from React UI.");
                 }
             }
         }

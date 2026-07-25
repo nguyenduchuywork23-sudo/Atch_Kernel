@@ -97,7 +97,14 @@ void DynamicScanner::Stop()
 // ─── Vòng lặp quét chính ───────────────────────────────────────────────────────
 void DynamicScanner::RunScanLoop(DWORD intervalMs)
 {
+    int cycles = 0;
     while (m_running.load()) {
+        if (++cycles > 60) {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            m_scannedPids.clear();
+            cycles = 0;
+            LOG_INFO("DynamicScanner: Cleared scanned PIDs cache to prevent memory leak.");
+        }
         auto processes = SnapshotRunningProcesses();
 
         for (auto& pe : processes) {

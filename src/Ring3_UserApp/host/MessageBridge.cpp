@@ -40,7 +40,9 @@ void MessageBridge::PostToReact(const std::wstring& jsonPayload)
 {
     if (m_webview && m_hwnd) {
         auto* payload = new std::wstring(jsonPayload);
-        PostMessageW(m_hwnd, WM_POST_TO_REACT, 0, reinterpret_cast<LPARAM>(payload));
+        if (!PostMessageW(m_hwnd, WM_POST_TO_REACT, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
     }
 }
 

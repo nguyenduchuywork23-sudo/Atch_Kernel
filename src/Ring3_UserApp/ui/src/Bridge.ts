@@ -66,22 +66,24 @@ export class Bridge {
 
   static addListener(callback: (message: MessageData) => void) {
     if (window.chrome?.webview) {
-      window.chrome.webview.addEventListener('message', (event: any) => {
+      const handler = (event: any) => {
         try {
-          // WebView2 truyền data dưới dạng event.data
           const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
           callback(data);
         } catch (e) {
           console.error('Failed to parse message from host:', e);
         }
-      });
+      };
+      window.chrome.webview.addEventListener('message', handler);
+      return () => window.chrome.webview.removeEventListener('message', handler);
     } else {
-      // Dùng window event thông thường cho test
-      window.addEventListener('message', (event) => {
+      const handler = (event: any) => {
         if (event.data && event.data.__mockHostMessage) {
           callback(event.data.payload);
         }
-      });
+      };
+      window.addEventListener('message', handler);
+      return () => window.removeEventListener('message', handler);
     }
   }
 

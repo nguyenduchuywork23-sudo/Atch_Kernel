@@ -43,7 +43,7 @@ public:
 
     // IOCTL_AK_LISTEN_EVENT: Blocking call - đợi Kernel gửi cảnh báo lên
     // Hàm này CHẶN luồng hiện tại cho đến khi có sự kiện hoặc bị hủy.
-    bool ListenForEvent(MONITOR_LOG_ENTRY& outEntry);
+    bool ListenForEvent(const WCHAR* sessionToken, MONITOR_LOG_ENTRY& outEntry);
 
     // IOCTL_AK_UNLOCK_EXAM: Mở khóa ngoại vi (chuột/bàn phím)
     bool UnlockExam(const WCHAR* sessionToken);

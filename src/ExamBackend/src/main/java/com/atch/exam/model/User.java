@@ -33,4 +33,6 @@ public class User {
     private String role; // e.g., ROLE_STUDENT, ROLE_ADMIN
 
     private String email;
+
+    private String hwid;
 }

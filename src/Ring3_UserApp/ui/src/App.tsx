@@ -110,7 +110,7 @@ function App() {
     //   return;
     // }
 
-    Bridge.addListener((message) => {
+    const removeListener = Bridge.addListener((message) => {
       switch (message.type) {
 
         case HostEventType.DRIVER_INITIALIZED:
@@ -173,27 +173,37 @@ function App() {
 
     // Giả lập load driver thành công sau 1.5s cho mượt
     const timer = setTimeout(() => setIsDriverLoaded(true), 1500);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      if (removeListener) removeListener();
+    };
   }, []);
 
   useEffect(() => {
     if (userRole === 'teacher') {
+      const abortController = new AbortController();
+
       const fetchDashboard = async () => {
         try {
           const [sessRes, logsRes] = await Promise.all([
-            getSessions(),
-            getLogs()
+            getSessions(abortController.signal),
+            getLogs(abortController.signal)
           ]);
           setSessions(sessRes);
           setTeacherLogs(logsRes);
-        } catch (error) {
-          console.error("Failed to fetch dashboard data:", error);
+        } catch (error: any) {
+          if (error.name !== 'AbortError') {
+            console.error("Failed to fetch dashboard data:", error);
+          }
         }
       };
       
       fetchDashboard();
       const interval = setInterval(fetchDashboard, 3000);
-      return () => clearInterval(interval);
+      return () => {
+        clearInterval(interval);
+        abortController.abort();
+      };
     }
   }, [userRole]);
 
