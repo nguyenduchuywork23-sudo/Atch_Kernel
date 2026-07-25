@@ -25,9 +25,8 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 
-// ─── Hằng số cấu hình ────────────────────────────────────────────────────────
 // Session token dùng chung (trong thực tế sẽ được cấp từ server xác thực)
-static const wchar_t kSessionToken[] = L"ATCH_SESSION_2026_XYZ";
+static std::wstring g_sessionToken;
 
 // URL hoặc đường dẫn nội bộ tới React app
 // - DEV  : L"http://localhost:5173"
@@ -40,6 +39,7 @@ static MessageBridge     g_bridge;
 static std::atomic<bool> g_running{ true };
 static DynamicScanner*   g_scanner{ nullptr };
 static Microsoft::WRL::ComPtr<ICoreWebView2Controller> g_webviewController;
+static HWND g_hWnd = nullptr;
 
 // ─── Kiosk Mode Hook ──────────────────────────────────────────────────────────
 static HHOOK g_kbdHook = nullptr;
@@ -52,9 +52,9 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         if (p->vkCode == VK_LWIN || p->vkCode == VK_RWIN) {
             block = true;
         }
-        // Chặn Alt + Tab, Alt + Esc
+        // Chặn Alt + Tab, Alt + Esc, Alt + F4
         if (p->flags & LLKHF_ALTDOWN) {
-            if (p->vkCode == VK_TAB || p->vkCode == VK_ESCAPE) {
+            if (p->vkCode == VK_TAB || p->vkCode == VK_ESCAPE || p->vkCode == VK_F4) {
                 block = true;
             }
         }
@@ -94,6 +94,16 @@ int main() {
 // ─── Điểm vào ─────────────────────────────────────────────────────────────────
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
+    // Lấy session token từ tham số dòng lệnh
+    int argc;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv && argc > 1) {
+        g_sessionToken = argv[1];
+    } else {
+        g_sessionToken = L"ATCH_SESSION_2026_XYZ";
+    }
+    if (argv) LocalFree(argv);
+
     // [SECURITY] Thiết lập DPI-aware để tránh rendering bị scale lạ
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -111,8 +121,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     bool driverOk = g_driver.Open();
     if (driverOk) {
         LOG_INFO("Connected to Atch Kernel Driver successfully.");
-        g_driver.InitializeExam(GetCurrentProcessId(), 0x01, kSessionToken);
-        g_driver.AddWhitelistPid(kSessionToken, GetCurrentProcessId());
+        g_driver.InitializeExam(GetCurrentProcessId(), 0x01, g_sessionToken.c_str());
+        g_driver.AddWhitelistPid(g_sessionToken.c_str(), GetCurrentProcessId());
         LOG_INFO("Exam session initialized in Kernel.");
     } else {
         LOG_WARN("Failed to connect to Atch Kernel Driver. Operating in UI-only mode.");
@@ -149,6 +159,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         CoUninitialize();
         return 1;
     }
+    g_hWnd = hWnd;
+    SetWindowDisplayAffinity(g_hWnd, WDA_MONITOR);
 
     LOG_INFO("Setting Keyboard Hook...");
     // [SECURITY] Khóa phím hệ thống (Alt+Tab, WinKey) để làm Kiosk Mode
@@ -207,8 +219,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                                         if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
                                             std::wstring wUri = uri;
                                             // Chỉ cho phép localhost (React App) và itest.cmcu.edu.vn (Bài thi)
-                                            if (wUri.find(L"localhost") == std::wstring::npos && 
-                                                wUri.find(L"itest.cmcu.edu.vn") == std::wstring::npos) {
+                                            if (wUri.find(L"http://localhost:5173") != 0 && 
+                                                wUri.find(L"https://itest.cmcu.edu.vn") != 0) {
                                                 args->put_Cancel(TRUE); // Chặn điều hướng
                                                 LOG_WARN(L"Blocked unauthorized navigation to: " + wUri);
                                             }
@@ -263,13 +275,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     std::unique_ptr<HeartbeatManager> heartbeat;
     if (driverOk) {
         heartbeat = std::make_unique<HeartbeatManager>(
-            g_driver, kSessionToken, OnHeartbeatFail);
+            g_driver, g_sessionToken, OnHeartbeatFail);
         heartbeat->Start(5000);
     }
 
     // Thread 3: DynamicScanner – Ring-3 First Verification
     // Quét tiến trình mới, kiểm tra chữ ký số, rồi định tuyến quyết định xuống Ring 0.
-    DynamicScanner scanner(g_driver, g_bridge, kSessionToken);
+    DynamicScanner scanner(g_driver, g_bridge, g_sessionToken);
     g_scanner = &scanner;
     // Thêm PID của chính ứng dụng vào danh sách tin cậy
     scanner.AddTrustedProcessName(L"AtchKernelHost.exe");
@@ -314,7 +326,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     integrityChecker.Stop();
 
     if (driverOk) {
-        g_driver.TerminateExam(kSessionToken);
+        g_driver.CancelPendingIo();
+        g_driver.TerminateExam(g_sessionToken.c_str());
         g_driver.Close();
         LOG_INFO("Terminated exam session and closed driver.");
     }
@@ -398,9 +411,9 @@ void OnIntegrityFail(const std::wstring& reason)
     
     // Bắt buộc exit để ngăn gian lận
     if (g_driver.IsOpen())
-        g_driver.TerminateExam(kSessionToken);
+        g_driver.TerminateExam(g_sessionToken.c_str());
     g_running = false;
-    PostQuitMessage(0);
+    if (g_hWnd) PostMessageW(g_hWnd, WM_CLOSE, 0, 0);
 }
 
 // ─── Heartbeat thất bại ────────────────────────────────────────────────────────
@@ -409,7 +422,7 @@ void OnHeartbeatFail()
     LOG_ERR("Heartbeat Manager reported failure (driver lost).");
     g_bridge.NotifyDriverLost();
     g_running = false;
-    PostQuitMessage(0);
+    if (g_hWnd) PostMessageW(g_hWnd, WM_CLOSE, 0, 0);
 }
 
 // ─── Thread lắng nghe sự kiện từ Kernel (Inverted Call) ───────────────────────
@@ -419,7 +432,7 @@ void StartEventListenerThread()
         while (g_running.load()) {
             MONITOR_LOG_ENTRY entry{};
             // Blocking call – trả về khi Kernel có sự kiện
-            if (g_driver.ListenForEvent(kSessionToken, entry)) {
+            if (g_driver.ListenForEvent(g_sessionToken.c_str(), entry)) {
                 OnKernelViolation(entry);
             } else {
                 // IOCTL thất bại → driver có thể bị unload
@@ -429,51 +442,46 @@ void StartEventListenerThread()
     });
 }
 
+#include <regex>
+
 // ─── Xử lý message từ React ────────────────────────────────────────────────────
 void HandleReactMessage(const std::wstring& json)
 {
-    // Phân tích JSON đơn giản bằng tìm kiếm chuỗi (có thể thay bằng nlohmann/json)
     if (json.find(L"START_EXAM") != std::wstring::npos) {
         // React yêu cầu bắt đầu bài thi — thao tác đã được khởi tạo ở trên
-        // (InitializeExam gọi ngay khi Open() thành công)
     }
     else if (json.find(L"END_EXAM") != std::wstring::npos) {
         if (g_driver.IsOpen())
-            g_driver.TerminateExam(kSessionToken);
+            g_driver.TerminateExam(g_sessionToken.c_str());
         g_running = false;
-        PostQuitMessage(0);
+        if (g_hWnd) PostMessageW(g_hWnd, WM_CLOSE, 0, 0);
     }
     else if (json.find(L"REQUEST_UNLOCK") != std::wstring::npos) {
         if (g_driver.IsOpen())
-            g_driver.UnlockExam(kSessionToken);
+            g_driver.UnlockExam(g_sessionToken.c_str());
     }
     else if (json.find(L"HEARTBEAT") != std::wstring::npos) {
         if (g_driver.IsOpen()) {
-            g_driver.SendHeartbeat(kSessionToken);
+            g_driver.SendHeartbeat(g_sessionToken.c_str());
             LOG_DEBUG("Forwarded HEARTBEAT to Kernel");
         }
     }
     else if (json.find(L"KILL_PROCESS") != std::wstring::npos) {
-        size_t pidPos = json.find(L"\"pid\":");
-        if (pidPos != std::wstring::npos) {
-            std::wstring pidStr;
-            for (size_t i = pidPos + 6; i < json.length(); ++i) {
-                if (iswdigit(json[i])) pidStr += json[i];
-                else break;
-            }
-            if (!pidStr.empty()) {
-                try {
-                    DWORD pid = std::stoul(pidStr);
-                    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-                    if (hProc) {
-                        TerminateProcess(hProc, 1);
-                        CloseHandle(hProc);
-                        LOG_INFO("Killed process " + std::to_string(pid) + " via React request.");
-                    }
-                } catch (...) {
-                    LOG_ERR("Invalid PID format from React UI.");
+        std::wregex pidRegex(L"\"pid\"\\s*:\\s*(\\d+)");
+        std::wsmatch match;
+        if (std::regex_search(json, match, pidRegex)) {
+            try {
+                DWORD pid = std::stoul(match[1].str());
+                HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+                if (hProc) {
+                    TerminateProcess(hProc, 1);
+                    CloseHandle(hProc);
+                    LOG_INFO("Killed process " + std::to_string(pid) + " via React request.");
                 }
+            } catch (...) {
+                LOG_ERR("Invalid PID format from React UI.");
             }
         }
     }
 }
+

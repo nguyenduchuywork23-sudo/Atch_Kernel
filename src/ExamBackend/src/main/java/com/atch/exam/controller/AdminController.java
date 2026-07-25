@@ -24,8 +24,14 @@ public class AdminController {
         return ResponseEntity.ok(userRepository.findAll());
     }
 
+    @Autowired
+    private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+
     @PostMapping("/users")
     public ResponseEntity<User> createUser(@RequestBody User user) {
+        if (user.getPassword() != null && !user.getPassword().isEmpty()) {
+            user.setPassword(passwordEncoder.encode(user.getPassword()));
+        }
         return ResponseEntity.ok(userRepository.save(user));
     }
 

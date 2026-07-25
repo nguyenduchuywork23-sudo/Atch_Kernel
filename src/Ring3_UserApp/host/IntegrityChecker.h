@@ -40,6 +40,11 @@ public:
     bool IsBlacklistedWindowVisible();
     bool IsRemoteSessionActive();
     bool IsRunningInVirtualMachine();
+    bool HasAPIHooks();
+    bool HasIllegalMemoryAllocations();
+    bool HasIllegalThreads();
+    bool CheckIATIntegrity();
+    bool HasSuspiciousModules();
     void ErasePEHeader();
 
     // Tính toán & lưu CRC của .text section của chính tiến trình này

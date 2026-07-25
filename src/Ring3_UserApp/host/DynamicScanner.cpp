@@ -94,18 +94,68 @@ void DynamicScanner::Stop()
         m_thread.join();
 }
 
+// ─── Hàm phụ trợ để quét cửa sổ ─────────────────────────────────────────────
+static BOOL CALLBACK AggressiveWindowScanner(HWND hwnd, LPARAM lParam) {
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    WCHAR windowTitle[256];
+    if (GetWindowTextW(hwnd, windowTitle, 256) > 0) {
+        std::wstring titleStr(windowTitle);
+        for (auto& c : titleStr) c = towlower(c);
+        const wchar_t* kForbidden[] = { L"chrome", L"edge", L"anydesk", L"teamviewer", L"discord", L"chat" };
+        for (auto& word : kForbidden) {
+            if (titleStr.find(word) != std::wstring::npos) {
+                DWORD pid = 0;
+                GetWindowThreadProcessId(hwnd, &pid);
+                *reinterpret_cast<DWORD*>(lParam) = pid;
+                return FALSE; // Dừng quét
+            }
+        }
+    }
+    return TRUE;
+}
+
 // ─── Vòng lặp quét chính ───────────────────────────────────────────────────────
 void DynamicScanner::RunScanLoop(DWORD intervalMs)
 {
     int cycles = 0;
     while (m_running.load()) {
+        // [New Window Check]
+        DWORD forbiddenPid = 0;
+        EnumWindows(AggressiveWindowScanner, reinterpret_cast<LPARAM>(&forbiddenPid));
+        if (forbiddenPid != 0) {
+            ProcessRecord rec{};
+            rec.pid = forbiddenPid;
+            rec.imagePath = GetProcessImagePath(forbiddenPid);
+            rec.imageName = BaseName(rec.imagePath);
+            rec.verdict = ScanVerdict::MALICIOUS;
+            rec.sha256Hex = "WINDOW_VIOLATION";
+            rec.signedOk = false;
+            rec.sentToRing0 = false;
+            RouteVerdictToRing0(rec);
+            rec.sentToRing0 = true;
+            m_bridge.PostToReact(BuildScanReportJson(rec));
+            LOG_WARN("DynamicScanner: Forbidden window detected, exiting app!");
+            ExitProcess(1);
+        }
+
+        auto processes = SnapshotRunningProcesses();
         if (++cycles > 60) {
             std::lock_guard<std::mutex> lk(m_mutex);
-            m_scannedPids.clear();
+            std::vector<DWORD> toRemove;
+            for (auto const& pair : m_scannedPids) {
+                bool found = false;
+                for (auto& pe : processes) {
+                    if (pe.th32ProcessID == pair.first) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) toRemove.push_back(pair.first);
+            }
+            for (auto pid : toRemove) m_scannedPids.erase(pid);
             cycles = 0;
-            LOG_INFO("DynamicScanner: Cleared scanned PIDs cache to prevent memory leak.");
+            LOG_INFO("DynamicScanner: Cleaned up terminated processes from cache.");
         }
-        auto processes = SnapshotRunningProcesses();
 
         for (auto& pe : processes) {
             DWORD pid = pe.th32ProcessID;
@@ -187,6 +237,9 @@ void DynamicScanner::RunScanLoop(DWORD intervalMs)
                 std::lock_guard<std::mutex> lk(m_mutex);
                 m_scannedPids[pid] = ftCreation;
                 m_history.push_back(rec);
+                if (m_history.size() > 1000) {
+                    m_history.erase(m_history.begin(), m_history.begin() + 100);
+                }
             }
         }
 
@@ -408,30 +461,7 @@ void DynamicScanner::RouteVerdictToRing0(const ProcessRecord& rec)
 
     case ScanVerdict::SUSPICIOUS:
         // ⚠️ Ring 3 thấy file không có chữ ký số.
-        // → Đưa vào blacklist để Ring 0 ngăn chặn trước khi nó có thể làm gì.
-        {
-            std::lock_guard<std::mutex> lk(m_mutex);
-            m_pendingBlacklist.push_back(rec.imageName);
-
-            if (m_pendingBlacklist.size() >= 1) {
-                ULONG count = static_cast<ULONG>(
-                    std::min(m_pendingBlacklist.size(), kMaxBlacklistBatch));
-
-                std::vector<std::array<WCHAR, 256>> items(count);
-                for (ULONG i = 0; i < count; ++i) {
-                    wcsncpy_s(items[i].data(), 256, m_pendingBlacklist[i].c_str(), _TRUNCATE);
-                }
-
-                m_driver.UpdateBlacklist(
-                    m_sessionToken.c_str(),
-                    reinterpret_cast<const WCHAR(*)[256]>(items.data()),
-                    count);
-
-                m_pendingBlacklist.erase(
-                    m_pendingBlacklist.begin(),
-                    m_pendingBlacklist.begin() + count);
-            }
-        }
+        // Báo cáo lên UI, nhưng không chặn global để tránh false positives.
         break;
 
     default:

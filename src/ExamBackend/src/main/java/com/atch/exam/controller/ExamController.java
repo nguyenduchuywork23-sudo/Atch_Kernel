@@ -30,10 +30,12 @@ public class ExamController {
         if (session.getUser() == null) {
             throw new org.springframework.security.access.AccessDeniedException("Session has no associated user.");
         }
-        if (auth != null) {
-            if (!auth.getName().equals(session.getUser().getUsername())) {
-                return ResponseEntity.status(403).body("Forbidden: You cannot submit someone else's exam.");
-            }
+        if (auth == null || !auth.getName().equals(session.getUser().getUsername())) {
+            return ResponseEntity.status(403).body("Forbidden: You cannot submit someone else's exam.");
+        }
+        
+        if ("COMPLETED".equals(session.getStatus())) {
+            return ResponseEntity.badRequest().body("Exam already completed");
         }
         
         if (session.getStartTime() != null) {
@@ -41,6 +43,18 @@ public class ExamController {
             if (minutesSinceStart < 1) {
                 return ResponseEntity.badRequest().body("Cannot submit within 1 minute of starting");
             }
+            if (session.getExam() != null && session.getExam().getDurationMinutes() != null) {
+                if (minutesSinceStart > session.getExam().getDurationMinutes() + 5) {
+                    return ResponseEntity.badRequest().body("Time limit exceeded");
+                }
+            }
+        }
+        
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            session.setSubmissionData(mapper.writeValueAsString(submissionData));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("Invalid submission data");
         }
         
         session.setStatus("COMPLETED");

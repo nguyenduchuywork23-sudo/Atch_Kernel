@@ -45,6 +45,13 @@ void DriverController::Close()
     }
 }
 
+void DriverController::CancelPendingIo()
+{
+    if (m_hDevice != INVALID_HANDLE_VALUE) {
+        CancelIoEx(m_hDevice, nullptr);
+    }
+}
+
 // ─── Helper IOCTL ─────────────────────────────────────────────────────────
 bool DriverController::Ioctl(DWORD ctlCode,
                               PVOID inBuf,  DWORD inSize,

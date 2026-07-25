@@ -21,7 +21,11 @@ public:
     // Mở handle tới device của driver
     bool Open();
     void Close();
+    void CancelPendingIo();
+
+    // ─── Lấy trạng thái ───────────────────────────────────────────────────────
     bool IsOpen() const { return m_hDevice != INVALID_HANDLE_VALUE; }
+    HANDLE GetHandle() const { return m_hDevice; }
 
     // ─── Wrapper cho từng IOCTL ────────────────────────────────────────────
 

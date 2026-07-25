@@ -20,6 +20,15 @@ typedef NTSTATUS(NTAPI* pfnNtQueryInformationProcess)(
     HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG
 );
 
+typedef NTSTATUS(NTAPI* pfnNtQueryVirtualMemory)(
+    HANDLE ProcessHandle,
+    PVOID BaseAddress,
+    ULONG MemoryInformationClass,
+    PVOID MemoryInformation,
+    SIZE_T MemoryInformationLength,
+    PSIZE_T ReturnLength
+);
+
 IntegrityChecker::IntegrityChecker(IntegrityViolationCallback callback)
     : m_callback(std::move(callback))
 {
@@ -58,10 +67,16 @@ void IntegrityChecker::Start(DWORD intervalMs)
     m_thread = std::thread([this, intervalMs]() {
         LOG_INFO("IntegrityChecker: Thread started.");
         while (m_running.load()) {
+            ULONGLONG startTick = GetTickCount64();
             RunChecks();
             for (auto i = decltype(intervalMs){0}; i < intervalMs; i += 100) {
                 if (!m_running.load()) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            ULONGLONG endTick = GetTickCount64();
+            if (endTick - startTick > intervalMs + 5000) {
+                m_callback(L"INTEGRITY_FAIL: Process suspension detected (Anti-Suspend Watchdog)");
+                break;
             }
         }
         LOG_INFO("IntegrityChecker: Thread stopped.");
@@ -94,6 +109,24 @@ void IntegrityChecker::RunChecks()
     // [CHECK 3] DLL Injection: Có module lạ nào được nạp không?
     if (HasUnknownModulesInjected()) {
         m_callback(L"INTEGRITY_FAIL: Unknown DLL injected into process");
+        return;
+    }
+
+    // [CHECK 3.5] Anti-Injection: API Hooks
+    if (HasAPIHooks()) {
+        m_callback(L"INTEGRITY_FAIL: API Hook detected (LoadLibrary / OpenProcess)");
+        return;
+    }
+
+    // [CHECK 3.6] IAT Integrity
+    if (CheckIATIntegrity()) {
+        m_callback(L"INTEGRITY_FAIL: IAT Hook detected (Imports tampered)");
+        return;
+    }
+
+    // [CHECK 3.7] Unsigned/Suspicious Module
+    if (HasSuspiciousModules()) {
+        m_callback(L"INTEGRITY_FAIL: Suspicious unsigned DLL injected (Temp/AppData)");
         return;
     }
 
@@ -139,15 +172,23 @@ void IntegrityChecker::RunChecks()
         return;
     }
 
-    // [CHECK 10] Clipboard Protection (Anti-Copy-Paste)
-    if (OpenClipboard(nullptr)) {
-        EmptyClipboard();
-        CloseClipboard();
-    }
+    // [CHECK 10] Clipboard Protection (Anti-Copy-Paste) - Removed for UX
 
     // [CHECK 11] Multi-Monitor (Anti-Second-Screen)
     if (GetSystemMetrics(SM_CMONITORS) > 1) {
         m_callback(L"INTEGRITY_FAIL: Multiple monitors detected. Please disconnect external screens.");
+        return;
+    }
+
+    // [CHECK 12] Memory Integrity (PAGE_EXECUTE_READWRITE without backing module)
+    if (HasIllegalMemoryAllocations()) {
+        m_callback(L"INTEGRITY_FAIL: Illegal memory allocation (Manual Map / Shellcode) detected");
+        return;
+    }
+
+    // [CHECK 13] Thread Integrity (Threads starting outside known modules)
+    if (HasIllegalThreads()) {
+        m_callback(L"INTEGRITY_FAIL: Illegal thread detected (Start address outside module boundaries)");
         return;
     }
 }
@@ -188,8 +229,12 @@ bool IntegrityChecker::IsDebuggerAttached()
         }
     }
 
-    // Phương pháp 3: Kiểm tra cờ heap NtGlobalFlag (debugger bật cờ 0x70)
+    // Phương pháp 3: Kiểm tra cờ heap NtGlobalFlag (debugger bật cờ 0x70) và BeingDebugged
     PPEB pPeb = (PPEB)__readgsqword(0x60);
+    BYTE beingDebugged = *(PBYTE)((PBYTE)pPeb + 2); // Offset 2 on x64
+    if (beingDebugged) {
+        return true;
+    }
     DWORD ntGlobalFlag = *(PDWORD)((PBYTE)pPeb + 0xBC); // Offset 0xBC on x64
     if (ntGlobalFlag & 0x70) {
         return true;
@@ -214,8 +259,8 @@ bool IntegrityChecker::IsAdvancedDebuggerAttached()
     for(int i = 0; i < 1000; ++i) { dummy += i; }
     unsigned __int64 tsc2 = __rdtsc();
     
-    // Nếu tsc2 - tsc1 quá lớn (ví dụ > 0xFFFFFF), rất có thể đang bị trace
-    if ((tsc2 - tsc1) > 0xFFFFFF) {
+    // Nếu tsc2 - tsc1 quá lớn (ví dụ > 0xFFFFFFFF), rất có thể đang bị trace
+    if ((tsc2 - tsc1) > 0xFFFFFFFFULL) {
         return true;
     }
 
@@ -263,6 +308,27 @@ bool IntegrityChecker::IsHardwareBreakpointSet()
     }
     CloseHandle(hSnap);
     return found;
+}
+
+// ─── [CHECK 2.5] Phát hiện API Hooks ──────────────────────────────────────
+bool IntegrityChecker::HasAPIHooks()
+{
+    const char* apis[] = { "LoadLibraryA", "LoadLibraryW", "OpenProcess" };
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (!hKernel32) return false;
+
+    for (const char* api : apis) {
+        FARPROC pFunc = GetProcAddress(hKernel32, api);
+        if (pFunc) {
+            BYTE firstByte = *reinterpret_cast<BYTE*>(pFunc);
+            // 0xE9 = JMP rel32, 0xEB = JMP rel8
+            if (firstByte == 0xE9 || firstByte == 0xEB) {
+                LOG_WARN(L"IntegrityChecker: API Hook detected!");
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // ─── [CHECK 3] Phát hiện DLL Injection ────────────────────────────────────
@@ -335,21 +401,19 @@ bool IntegrityChecker::IsParentProcessLegitimate()
     CloseHandle(hParent);
 
     std::wstring nameStr(parentName);
+    for (auto& c : nameStr) c = towlower(c);
 
     // Danh sách tiến trình cha được chấp nhận (launcher hợp lệ)
     const wchar_t* kAllowedParents[] = {
-        L"explorer.exe",
-        L"cmd.exe",
-        L"powershell.exe",
-        L"pwsh.exe",
+        L"c:\\windows\\explorer.exe",
+        L"c:\\windows\\system32\\cmd.exe",
+        L"c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe",
+        L"c:\\program files\\powershell\\7\\pwsh.exe"
         // Thêm launcher chính thức ở đây
     };
     for (auto& ap : kAllowedParents) {
-        if (nameStr.size() >= wcslen(ap)) {
-            std::wstring tail = nameStr.substr(nameStr.size() - wcslen(ap));
-            if (_wcsicmp(tail.c_str(), ap) == 0)
-                return true;
-        }
+        if (nameStr == ap)
+            return true;
     }
 
     // Tiến trình cha không phải từ danh sách trắng → cảnh báo
@@ -454,10 +518,8 @@ bool IntegrityChecker::IsRunningInVirtualMachine()
     // Gọi CPUID với EAX=1
     __cpuid(cpuInfo, 1);
     
-    // CPUInfo[2] tương ứng với ECX. Bit thứ 31 là Hypervisor present bit.
-    if ((cpuInfo[2] & (1 << 31)) != 0) {
-        return true; // Đang chạy trong môi trường ảo hóa (VMware, VirtualBox, Hyper-V, v.v.)
-    }
+    // Bỏ qua kiểm tra Hyper-V flag để tránh false positive trên Windows 11 VBS
+    // if ((cpuInfo[2] & (1 << 31)) != 0) { ... }
     
     // Kiểm tra các Artifacts của máy ảo phổ biến
     const wchar_t* vmFiles[] = {
@@ -507,7 +569,7 @@ void IntegrityChecker::ErasePEHeader()
     // Thay đổi quyền bảo vệ bộ nhớ thành PAGE_READWRITE để có thể xóa
     if (VirtualProtect(hModule, headerSize, PAGE_READWRITE, &oldProtect)) {
         // Ghi đè toàn bộ header bằng số 0
-        // SecureZeroMemory(hModule, headerSize);
+        SecureZeroMemory(hModule, headerSize);
         
         // Khôi phục quyền bảo vệ bộ nhớ ban đầu
         DWORD temp = 0;
@@ -564,3 +626,175 @@ DWORD IntegrityChecker::ComputeRegionCRC32(const BYTE* data, SIZE_T len)
         crc = kTable[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
     return crc ^ 0xFFFFFFFFu;
 }
+
+// ─── [CHECK 12] Memory Integrity ──────────────────────────────────────────
+bool IntegrityChecker::HasIllegalMemoryAllocations()
+{
+    HANDLE hProc = GetCurrentProcess();
+    MEMORY_BASIC_INFORMATION mbi{};
+    PVOID addr = 0;
+
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    auto pNtQVM = hNtdll ? reinterpret_cast<pfnNtQueryVirtualMemory>(GetProcAddress(hNtdll, "NtQueryVirtualMemory")) : nullptr;
+
+    while (true) {
+        bool success = false;
+        if (pNtQVM) {
+            SIZE_T retLen = 0;
+            NTSTATUS status = pNtQVM(hProc, addr, 0, &mbi, sizeof(mbi), &retLen);
+            success = NT_SUCCESS(status);
+        } else {
+            success = (VirtualQueryEx(hProc, addr, &mbi, sizeof(mbi)) == sizeof(mbi));
+        }
+
+        if (!success) break;
+
+        if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_EXECUTE_READWRITE) {
+            WCHAR modName[MAX_PATH];
+            if (GetModuleFileNameExW(hProc, mbi.AllocationBase, modName, MAX_PATH) == 0) {
+                return true;
+            }
+        }
+        addr = (PBYTE)mbi.BaseAddress + mbi.RegionSize;
+    }
+    return false;
+}
+
+// ─── [CHECK 13] Thread Integrity ──────────────────────────────────────────
+typedef NTSTATUS (NTAPI *pfnNtQueryInformationThread)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+bool IntegrityChecker::HasIllegalThreads()
+{
+    DWORD currentPid = GetCurrentProcessId();
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return false;
+
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    auto pNtQIT = hNtdll ? reinterpret_cast<pfnNtQueryInformationThread>(GetProcAddress(hNtdll, "NtQueryInformationThread")) : nullptr;
+    auto pNtQVM = hNtdll ? reinterpret_cast<pfnNtQueryVirtualMemory>(GetProcAddress(hNtdll, "NtQueryVirtualMemory")) : nullptr;
+
+    THREADENTRY32 te32{};
+    te32.dwSize = sizeof(te32);
+    bool found = false;
+
+    if (pNtQIT && Thread32First(hSnap, &te32)) {
+        do {
+            if (te32.th32OwnerProcessID == currentPid) {
+                HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te32.th32ThreadID);
+                if (hThread) {
+                    PVOID startAddr = 0;
+                    NTSTATUS status = pNtQIT(hThread, 9 /*ThreadQuerySetWin32StartAddress*/, &startAddr, sizeof(startAddr), nullptr);
+                    if (NT_SUCCESS(status) && startAddr != 0) {
+                        MEMORY_BASIC_INFORMATION mbi{};
+                        bool success = false;
+                        if (pNtQVM) {
+                            SIZE_T retLen = 0;
+                            success = NT_SUCCESS(pNtQVM(GetCurrentProcess(), startAddr, 0, &mbi, sizeof(mbi), &retLen));
+                        } else {
+                            success = (VirtualQuery(startAddr, &mbi, sizeof(mbi)) != 0);
+                        }
+                        
+                        if (success) {
+                            WCHAR modName[MAX_PATH];
+                            if (GetModuleFileNameExW(GetCurrentProcess(), mbi.AllocationBase, modName, MAX_PATH) == 0) {
+                                found = true;
+                            }
+                        }
+                    }
+                    CloseHandle(hThread);
+                }
+            }
+            if (found) break;
+        } while (Thread32Next(hSnap, &te32));
+    }
+    CloseHandle(hSnap);
+    return found;
+}
+
+bool IntegrityChecker::CheckIATIntegrity()
+{
+    HMODULE hSelf = GetModuleHandleW(nullptr);
+    if (!hSelf) return false;
+
+    auto* pDosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(hSelf);
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return false;
+
+    auto* pNtHeader = reinterpret_cast<PIMAGE_NT_HEADERS>(
+        reinterpret_cast<BYTE*>(hSelf) + pDosHeader->e_lfanew);
+    
+    IMAGE_DATA_DIRECTORY impDir = pNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (impDir.VirtualAddress == 0) return false;
+
+    auto* pImportDesc = reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(
+        reinterpret_cast<BYTE*>(hSelf) + impDir.VirtualAddress);
+
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    auto pNtQVM = hNtdll ? reinterpret_cast<pfnNtQueryVirtualMemory>(GetProcAddress(hNtdll, "NtQueryVirtualMemory")) : nullptr;
+
+    while (pImportDesc->Name != 0) {
+        auto* pThunk = reinterpret_cast<PIMAGE_THUNK_DATA>(
+            reinterpret_cast<BYTE*>(hSelf) + pImportDesc->FirstThunk);
+        
+        while (pThunk->u1.Function != 0) {
+            PVOID funcAddr = reinterpret_cast<PVOID>(pThunk->u1.Function);
+            
+            MEMORY_BASIC_INFORMATION mbi{};
+            bool success = false;
+            if (pNtQVM) {
+                SIZE_T retLen = 0;
+                success = NT_SUCCESS(pNtQVM(GetCurrentProcess(), funcAddr, 0, &mbi, sizeof(mbi), &retLen));
+            } else {
+                success = (VirtualQuery(funcAddr, &mbi, sizeof(mbi)) != 0);
+            }
+
+            if (success) {
+                WCHAR modName[MAX_PATH]{};
+                if (GetModuleFileNameExW(GetCurrentProcess(), mbi.AllocationBase, modName, MAX_PATH)) {
+                    std::wstring wModName = modName;
+                    for (auto& c : wModName) c = towlower(c);
+                    
+                    if (wModName.find(L"\\windows\\") == std::wstring::npos && 
+                        wModName.find(L"\\system32\\") == std::wstring::npos &&
+                        wModName.find(L"\\syswow64\\") == std::wstring::npos &&
+                        wModName.find(L"\\system\\") == std::wstring::npos &&
+                        (PVOID)hSelf != mbi.AllocationBase) {
+                        LOG_WARN(L"IntegrityChecker: IAT Hook detected: " + wModName);
+                        return true; 
+                    }
+                } else {
+                    return true; // Unbacked memory (Hook)
+                }
+            }
+            pThunk++;
+        }
+        pImportDesc++;
+    }
+    return false;
+}
+
+bool IntegrityChecker::HasSuspiciousModules()
+{
+    HMODULE hMods[256]{};
+    DWORD cbNeeded = 0;
+    HANDLE hProc = GetCurrentProcess();
+    if (EnumProcessModules(hProc, hMods, sizeof(hMods), &cbNeeded)) {
+        DWORD count = cbNeeded / sizeof(HMODULE);
+        for (DWORD i = 0; i < count; ++i) {
+            WCHAR name[MAX_PATH]{};
+            if (GetModuleFileNameExW(hProc, hMods[i], name, MAX_PATH)) {
+                std::wstring modName(name);
+                for (auto& c : modName) c = towlower(c);
+
+                if (modName.find(L"\\appdata\\") != std::wstring::npos ||
+                    modName.find(L"\\temp\\") != std::wstring::npos ||
+                    modName.find(L"\\roaming\\") != std::wstring::npos ||
+                    modName.find(L"\\local\\") != std::wstring::npos) {
+                    LOG_WARN(L"IntegrityChecker: Suspicious module loaded: " + modName);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+

@@ -50,7 +50,6 @@ export class Bridge {
       window.chrome.webview.postMessage(message);
     } else {
       // Đang chạy trên trình duyệt thường (Dev/Test)
-      console.log('[Mock WebView2] Sending message to Host:', message);
       
       // Giả lập phản hồi từ Host cho mục đích test
       if (type === ClientCommandType.START_EXAM) {
@@ -78,6 +77,7 @@ export class Bridge {
       return () => window.chrome.webview.removeEventListener('message', handler);
     } else {
       const handler = (event: any) => {
+        if (event.origin !== window.location.origin) return;
         if (event.data && event.data.__mockHostMessage) {
           callback(event.data.payload);
         }
@@ -92,6 +92,6 @@ export class Bridge {
     window.postMessage({
       __mockHostMessage: true,
       payload: message
-    }, '*');
+    }, window.location.origin);
   }
 }

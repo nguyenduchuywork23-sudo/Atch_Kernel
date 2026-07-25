@@ -6,6 +6,7 @@ import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 
 import javax.crypto.SecretKey;
 import java.util.Date;
@@ -16,9 +17,15 @@ import java.util.function.Function;
 @Component
 public class JwtUtils {
 
-    // Ideally, this should be in application.properties
-    private final String SECRET = "thisIsASecretKeyForJwtWhichMustBeLongEnoughForHS256Signature1234567890";
-    private final SecretKey key = Keys.hmacShaKeyFor(SECRET.getBytes());
+    @Value("${jwt.secret:defaultSecretForJwtWhichMustBeLongEnoughForHS256Signature1234567890}")
+    private String secret;
+    private SecretKey key;
+    private final java.util.Set<String> blacklistedTokens = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    @jakarta.annotation.PostConstruct
+    public void init() {
+        this.key = Keys.hmacShaKeyFor(secret.getBytes());
+    }
     
     public String extractUsername(String token) {
         return extractClaim(token, Claims::getSubject);
@@ -48,11 +55,18 @@ public class JwtUtils {
 
     private String createToken(Map<String, Object> claims, String subject) {
         return Jwts.builder().setClaims(claims).setSubject(subject).setIssuedAt(new Date(System.currentTimeMillis()))
-                .setExpiration(new Date(System.currentTimeMillis() + 1000 * 60 * 60 * 10)) // 10 hours
+                .setExpiration(new Date(System.currentTimeMillis() + 1000 * 60 * 60)) // 1 hour
                 .signWith(key).compact();
+    }
+    
+    public void invalidateToken(String token) {
+        blacklistedTokens.add(token);
     }
 
     public Boolean validateToken(String token, UserDetails userDetails) {
+        if (blacklistedTokens.contains(token)) {
+            return false;
+        }
         final String username = extractUsername(token);
         return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
     }

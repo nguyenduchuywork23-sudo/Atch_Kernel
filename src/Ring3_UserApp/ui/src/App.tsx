@@ -241,7 +241,7 @@ function App() {
           .then(data => {
               // Fallback to the requested URL if backend returns null
               const url = (data && (data.targetExamUrl || data.target_exam_url)) || 'https://itest.cmcu.edu.vn/';
-              if (url) {
+              if (url && /^https?:\/\//i.test(url)) {
                   setTargetExamUrl(url);
                   setExamUnlocked(true); // Tự động hiển thị đề thi nếu Admin đã cấu hình link
               }
@@ -281,10 +281,10 @@ function App() {
     try {
       const data = await login({ username, password });
       setUserRole(data.role);
-      if (data.token) localStorage.setItem('token', data.token);
+      if (data.token) sessionStorage.setItem('token', data.token);
       setShowLogin(false);
       if (data.role === 'student') {
-        Bridge.postMessage(ClientCommandType.START_EXAM, { sessionToken: data.sessionToken || 'EXAM_2026_XYZ' });
+        Bridge.postMessage(ClientCommandType.START_EXAM, { sessionToken: data.sessionToken });
         setExamStarted(true);
         try {
           const exam = await getExam('001');
@@ -339,7 +339,7 @@ function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('token'); // [SECURITY] Xóa JWT Token
+    sessionStorage.removeItem('token'); // [SECURITY] Xóa JWT Token
     setUserRole(null);
     setExamStarted(false);
     setUsername('');
@@ -476,6 +476,8 @@ function App() {
           ) : targetExamUrl ? (
             <iframe 
               src={targetExamUrl}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              referrerPolicy="no-referrer"
               style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', border: 'none' }}
               title="Exam Content"
             />

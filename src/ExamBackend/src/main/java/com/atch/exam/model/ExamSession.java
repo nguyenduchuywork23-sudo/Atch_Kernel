@@ -33,4 +33,7 @@ public class ExamSession {
     private Double score;
 
     private String status; // e.g., IN_PROGRESS, COMPLETED
+
+    @Column(columnDefinition = "TEXT")
+    private String submissionData;
 }
