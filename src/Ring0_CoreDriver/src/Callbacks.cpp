@@ -409,8 +409,10 @@ OB_PREOP_CALLBACK_STATUS PreOperationCallback(
     BOOLEAN mustDeref = FALSE;
     if (clientProcess == NULL) {
         // Fallback: EPROCESS not cached (shouldn't happen when PID != 0)
-        // OMEGA-XII: Guard against DISPATCH_LEVEL to prevent BSOD
-        if (KeGetCurrentIrql() >= DISPATCH_LEVEL) {
+        // OMEGA-XII: Guard against non-PASSIVE_LEVEL to prevent BSOD.
+        // PsLookupProcessByProcessId requires PASSIVE_LEVEL. The previous check
+        // (>= DISPATCH_LEVEL) incorrectly allowed APC_LEVEL through.
+        if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
             return OB_PREOP_SUCCESS;
         }
         
