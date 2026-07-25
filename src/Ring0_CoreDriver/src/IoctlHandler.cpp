@@ -933,8 +933,15 @@ PKTHREAD GetHeartbeatThreadObject() {
 // Emergency cleanup when exam client process crashes (called from ProcessNotifyCallbackEx)
 void EmergencyCleanupExam(ULONG deadPid)
 {
-    // OMEGA-XIV: Runtime IRQL guard
-    if (KeGetCurrentIrql() > APC_LEVEL) return;
+    // OMEGA-XIV: Runtime IRQL guard — PsLookupProcessByProcessId requires PASSIVE_LEVEL.
+    // FastMutex raises IRQL to APC_LEVEL, so we MUST do the lookup BEFORE acquiring the mutex.
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) return;
+
+    // OMEGA-XV: Perform PsLookupProcessByProcessId at PASSIVE_LEVEL, BEFORE the FastMutex.
+    // This avoids the IRQL_NOT_LESS_OR_EQUAL BugCheck that would occur if called at APC_LEVEL.
+    PEPROCESS currentEProcess = NULL;
+    NTSTATUS lookupStatus = PsLookupProcessByProcessId(UlongToHandle(deadPid), &currentEProcess);
+
     ExAcquireFastMutex(&g_ExamMutex);
 
     PVOID threadToWait = NULL;
@@ -943,8 +950,6 @@ void EmergencyCleanupExam(ULONG deadPid)
         // If PID was recycled, PsLookupProcessByProcessId returns a DIFFERENT EPROCESS
         // than what we stored — we must NOT clear the session.
         PEPROCESS storedEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
-        PEPROCESS currentEProcess = NULL;
-        NTSTATUS lookupStatus = PsLookupProcessByProcessId(UlongToHandle(deadPid), &currentEProcess);
         if (NT_SUCCESS(lookupStatus) && currentEProcess != NULL) {
             // PID is alive again (recycled). Check if it's the SAME process.
             if (currentEProcess != storedEProcess) {
@@ -979,6 +984,11 @@ void EmergencyCleanupExam(ULONG deadPid)
         InterlockedExchange((LONG volatile*)&g_IsExamLocked, 0);
         
         threadToWait = SignalStopHeartbeatThread();
+    } else {
+        // CAS failed — deadPid is not our client. Clean up the lookup ref if we got one.
+        if (NT_SUCCESS(lookupStatus) && currentEProcess != NULL) {
+            ObDereferenceObject(currentEProcess);
+        }
     }
 
     ExReleaseFastMutex(&g_ExamMutex);
