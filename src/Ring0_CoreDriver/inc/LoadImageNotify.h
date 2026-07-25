@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 NTSTATUS InitLoadImageNotify(PDRIVER_OBJECT DriverObject);
-void UnloadImageNotify();
+void UnloadImageNotify(VOID);
 
 #ifdef __cplusplus
 }

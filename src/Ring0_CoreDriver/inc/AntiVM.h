@@ -8,9 +8,9 @@
 extern "C" {
 #endif
 
-BOOLEAN DetectHypervisor();
-BOOLEAN IsHypervisorDetected();
-BOOLEAN CheckMsrLstarIntegrity(); // OMEGA-XXV: Periodic MSR_LSTAR tamper check
+BOOLEAN DetectHypervisor(VOID);
+BOOLEAN IsHypervisorDetected(VOID);
+BOOLEAN CheckMsrLstarIntegrity(VOID); // OMEGA-XXV: Periodic MSR_LSTAR tamper check
 
 #ifdef __cplusplus
 }

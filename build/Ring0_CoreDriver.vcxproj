@@ -90,7 +90,7 @@
       <AdditionalOptions>%(AdditionalOptions) /kernel /EHs-c- /Zc:threadSafeInit-</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <BufferSecurityCheck></BufferSecurityCheck>
+      <BufferSecurityCheck>true</BufferSecurityCheck>
       <CallingConvention></CallingConvention>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -106,6 +106,7 @@
       <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
+      <SDLCheck>true</SDLCheck>
       <SupportJustMyCode></SupportJustMyCode>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -128,9 +129,9 @@
       <ProxyFileName>%(Filename)_p.c</ProxyFileName>
     </Midl>
     <Link>
-      <AdditionalDependencies>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\ntoskrnl.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\hal.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmsec.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\bufferoverflowfastfailk.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfLdr.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfDriverEntry.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\ntoskrnl.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\hal.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmsec.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\bufferoverflowfastfailk.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmguid.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfLdr.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfDriverEntry.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /DRIVER /guard:cf /PDBALTPATH:%%%%_PDB%%%%</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /DRIVER /guard:cf /PDBALTPATH:%%%%_PDB%%%% /INTEGRITYCHECK</AdditionalOptions>
       <CETCompat>true</CETCompat>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -156,7 +157,7 @@
       <AdditionalOptions>%(AdditionalOptions) /kernel /EHs-c- /Zc:threadSafeInit-</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
-      <BufferSecurityCheck></BufferSecurityCheck>
+      <BufferSecurityCheck>true</BufferSecurityCheck>
       <CallingConvention></CallingConvention>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <DisableSpecificWarnings>4324;4273</DisableSpecificWarnings>
@@ -164,6 +165,7 @@
       <FloatingPointModel></FloatingPointModel>
       <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MinimalRebuild></MinimalRebuild>
       <Optimization>MaxSpeed</Optimization>
@@ -171,11 +173,13 @@
       <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
+      <SDLCheck>true</SDLCheck>
       <SupportJustMyCode></SupportJustMyCode>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <TreatWarningAsError>true</TreatWarningAsError>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level4</WarningLevel>
+      <WholeProgramOptimization>true</WholeProgramOptimization>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_AMD64_;AMD64;_WIN64;CONDITION_HANDLING=1;NT_UP=1;NT_INST=0;WIN32=100;_NT1X_=100;WINNT=1;_WIN32_WINNT=0x0A00;WINVER=0x0A00;_WIN32_IE=0x0A00;EXLEVEL=4;CRTDLL=1;_M_AMD64;KMDF_VERSION_MAJOR=1;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <DebugInformationFormat>
@@ -195,9 +199,9 @@
       <ProxyFileName>%(Filename)_p.c</ProxyFileName>
     </Midl>
     <Link>
-      <AdditionalDependencies>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\ntoskrnl.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\hal.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmsec.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\bufferoverflowfastfailk.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfLdr.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfDriverEntry.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\ntoskrnl.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\hal.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmsec.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\bufferoverflowfastfailk.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmguid.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfLdr.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfDriverEntry.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /DRIVER /guard:cf /PDBALTPATH:%%%%_PDB%%%%</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /DRIVER /guard:cf /PDBALTPATH:%%%%_PDB%%%% /INTEGRITYCHECK</AdditionalOptions>
       <CETCompat>true</CETCompat>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -208,6 +212,7 @@
       <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
       <ImportLibrary>C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/Release/Ring0_CoreDriver.lib</ImportLibrary>
       <LinkErrorReporting></LinkErrorReporting>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <OptimizeReferences>true</OptimizeReferences>
       <ProgramDataBaseFile>C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/Release/Ring0_CoreDriver.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress>true</RandomizedBaseAddress>
@@ -223,26 +228,29 @@
       <AdditionalOptions>%(AdditionalOptions) /kernel /EHs-c- /Zc:threadSafeInit-</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
-      <BufferSecurityCheck></BufferSecurityCheck>
+      <BufferSecurityCheck>true</BufferSecurityCheck>
       <CallingConvention></CallingConvention>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <DisableSpecificWarnings>4324;4273</DisableSpecificWarnings>
       <ExceptionHandling>Sync</ExceptionHandling>
       <FloatingPointModel></FloatingPointModel>
       <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
-      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MinimalRebuild></MinimalRebuild>
-      <Optimization>MinSpace</Optimization>
+      <Optimization>MaxSpeed</Optimization>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
+      <SDLCheck>true</SDLCheck>
       <SupportJustMyCode></SupportJustMyCode>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <TreatWarningAsError>true</TreatWarningAsError>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level4</WarningLevel>
+      <WholeProgramOptimization>true</WholeProgramOptimization>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_AMD64_;AMD64;_WIN64;CONDITION_HANDLING=1;NT_UP=1;NT_INST=0;WIN32=100;_NT1X_=100;WINNT=1;_WIN32_WINNT=0x0A00;WINVER=0x0A00;_WIN32_IE=0x0A00;EXLEVEL=4;CRTDLL=1;_M_AMD64;KMDF_VERSION_MAJOR=1;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <DebugInformationFormat>
@@ -262,9 +270,9 @@
       <ProxyFileName>%(Filename)_p.c</ProxyFileName>
     </Midl>
     <Link>
-      <AdditionalDependencies>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\ntoskrnl.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\hal.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmsec.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\bufferoverflowfastfailk.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfLdr.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfDriverEntry.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\ntoskrnl.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\hal.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmsec.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\bufferoverflowfastfailk.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmguid.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfLdr.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfDriverEntry.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /DRIVER /guard:cf /PDBALTPATH:%%%%_PDB%%%%</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /DRIVER /guard:cf /PDBALTPATH:%%%%_PDB%%%% /INTEGRITYCHECK</AdditionalOptions>
       <CETCompat>true</CETCompat>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -275,6 +283,7 @@
       <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
       <ImportLibrary>C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/MinSizeRel/Ring0_CoreDriver.lib</ImportLibrary>
       <LinkErrorReporting></LinkErrorReporting>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <OptimizeReferences>true</OptimizeReferences>
       <ProgramDataBaseFile>C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/MinSizeRel/Ring0_CoreDriver.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress>true</RandomizedBaseAddress>
@@ -290,7 +299,7 @@
       <AdditionalOptions>%(AdditionalOptions) /kernel /EHs-c- /Zc:threadSafeInit-</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
-      <BufferSecurityCheck></BufferSecurityCheck>
+      <BufferSecurityCheck>true</BufferSecurityCheck>
       <CallingConvention></CallingConvention>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -298,7 +307,8 @@
       <ExceptionHandling>Sync</ExceptionHandling>
       <FloatingPointModel></FloatingPointModel>
       <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
-      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MinimalRebuild></MinimalRebuild>
       <Optimization>MaxSpeed</Optimization>
@@ -306,11 +316,13 @@
       <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
+      <SDLCheck>true</SDLCheck>
       <SupportJustMyCode></SupportJustMyCode>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <TreatWarningAsError>true</TreatWarningAsError>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level4</WarningLevel>
+      <WholeProgramOptimization>true</WholeProgramOptimization>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_AMD64_;AMD64;_WIN64;CONDITION_HANDLING=1;NT_UP=1;NT_INST=0;WIN32=100;_NT1X_=100;WINNT=1;_WIN32_WINNT=0x0A00;WINVER=0x0A00;_WIN32_IE=0x0A00;EXLEVEL=4;CRTDLL=1;_M_AMD64;KMDF_VERSION_MAJOR=1;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
@@ -328,9 +340,9 @@
       <ProxyFileName>%(Filename)_p.c</ProxyFileName>
     </Midl>
     <Link>
-      <AdditionalDependencies>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\ntoskrnl.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\hal.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmsec.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\bufferoverflowfastfailk.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfLdr.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfDriverEntry.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\ntoskrnl.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\hal.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmsec.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\bufferoverflowfastfailk.lib;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\km\x64\wdmguid.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfLdr.lib;C:\Program Files (x86)\Windows Kits\10\Lib\wdf\kmdf\x64\1.33\WdfDriverEntry.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /DRIVER /guard:cf /PDBALTPATH:%%%%_PDB%%%%</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /DRIVER /guard:cf /PDBALTPATH:%%%%_PDB%%%% /INTEGRITYCHECK</AdditionalOptions>
       <CETCompat>true</CETCompat>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -341,6 +353,7 @@
       <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
       <ImportLibrary>C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/RelWithDebInfo/Ring0_CoreDriver.lib</ImportLibrary>
       <LinkErrorReporting></LinkErrorReporting>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <OptimizeReferences>true</OptimizeReferences>
       <ProgramDataBaseFile>C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/build/RelWithDebInfo/Ring0_CoreDriver.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress>true</RandomizedBaseAddress>
@@ -412,6 +425,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\AntiDKOM.cpp" />
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\AntiVM.cpp" />
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\Callbacks.cpp" />
+    <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\DmaProtection.cpp" />
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\DriverEntry.cpp" />
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\HWID.cpp" />
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\HypervisorCore.cpp" />
@@ -419,7 +433,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\IoctlHandler.cpp" />
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\LoadImageNotify.cpp" />
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\MemoryScanner.cpp" />
-    <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\MemorySync.cpp" />
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\ThreadNotify.cpp" />
   </ItemGroup>
   <ItemGroup />

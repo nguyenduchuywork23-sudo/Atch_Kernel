@@ -55,8 +55,7 @@ CMAKE_CXX_FLAGS_RELEASE:STRING=/O2 /Ob2 /DNDEBUG
 //Flags used by the CXX compiler during RELWITHDEBINFO builds.
 CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=/Zi /O2 /Ob1 /DNDEBUG
 
-//Libraries linked by default with all C++ applications.
-CMAKE_CXX_STANDARD_LIBRARIES:STRING=kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
+CMAKE_CXX_STANDARD_LIBRARIES:STRING=
 
 //Flags used by the C compiler during all build types.
 CMAKE_C_FLAGS:STRING=/DWIN32 /D_WINDOWS
@@ -73,8 +72,7 @@ CMAKE_C_FLAGS_RELEASE:STRING=/O2 /Ob2 /DNDEBUG
 //Flags used by the C compiler during RELWITHDEBINFO builds.
 CMAKE_C_FLAGS_RELWITHDEBINFO:STRING=/Zi /O2 /Ob1 /DNDEBUG
 
-//Libraries linked by default with all C applications.
-CMAKE_C_STANDARD_LIBRARIES:STRING=kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
+CMAKE_C_STANDARD_LIBRARIES:STRING=
 
 //Flags used by the linker during all build types.
 CMAKE_EXE_LINKER_FLAGS:STRING=/machine:x64
@@ -232,6 +230,9 @@ WDK_hal_LIB:FILEPATH=C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/km/
 
 //Path to a library.
 WDK_ntoskrnl_LIB:FILEPATH=C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/km/x64/ntoskrnl.lib
+
+//Path to a library.
+WDK_wdmguid_LIB:FILEPATH=C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/km/x64/wdmguid.lib
 
 //Path to a library.
 WDK_wdmsec_LIB:FILEPATH=C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/km/x64/wdmsec.lib

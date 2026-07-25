@@ -7,10 +7,10 @@ extern "C" {
 #endif
 
 // Khởi tạo Memory Scanner
-NTSTATUS InitMemoryScanner();
+NTSTATUS InitMemoryScanner(VOID);
 
 // Gọi hàm này định kỳ để quét RAM của Exam Process
-void CheckMemoryScanner();
+void CheckMemoryScanner(VOID);
 
 #ifdef __cplusplus
 }

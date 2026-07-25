@@ -33,6 +33,7 @@ set(OLD_GLOB
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/AntiDKOM.cpp"
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/AntiVM.cpp"
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/Callbacks.cpp"
+  "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/DmaProtection.cpp"
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/DriverEntry.cpp"
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/HWID.cpp"
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/HypervisorCore.cpp"
@@ -40,7 +41,6 @@ set(OLD_GLOB
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/IoctlHandler.cpp"
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/LoadImageNotify.cpp"
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/MemoryScanner.cpp"
-  "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/MemorySync.cpp"
   "C:/Users/Nguye/OneDrive/Desktop/Atch_Kernel/src/Ring0_CoreDriver/src/ThreadNotify.cpp"
   )
 if(NOT "${NEW_GLOB}" STREQUAL "${OLD_GLOB}")

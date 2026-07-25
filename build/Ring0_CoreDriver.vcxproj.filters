@@ -13,6 +13,9 @@
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\Callbacks.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\DmaProtection.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\DriverEntry.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -32,9 +35,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\MemoryScanner.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\MemorySync.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="C:\Users\Nguye\OneDrive\Desktop\Atch_Kernel\src\Ring0_CoreDriver\src\ThreadNotify.cpp">

@@ -71,7 +71,7 @@ NTSTATUS InitHypervisorCore() {
         return status;
     }
 
-    AtchPrint(("AtchKernel: [Hypervisor] Nền tảng OMEGA-VIII đã sẵn sàng. Việc triển khai VMX Root Mode (VMRESUME/VMLAUNCH) sẽ được kích hoạt ở bản cập nhật tiếp theo.\n"));
+    AtchPrint(("AtchKernel: [Hypervisor] OMEGA-XV WARNING: VMXON Region allocated but VMX Root Mode is a STUB. Ring -1 protection is NOT active.\n"));
     return STATUS_SUCCESS;
 }
 

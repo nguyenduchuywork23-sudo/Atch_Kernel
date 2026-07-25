@@ -27,6 +27,8 @@ inline ULONG RuntimeHashUnicodeString(PCUNICODE_STRING uniStr) {
     USHORT chars = uniStr->Length / sizeof(WCHAR);
     
     for (USHORT i = 0; i < chars; ++i) {
+        // OMEGA-XIX: Stop at null terminator to match CompileTimeHashW behavior
+        if (uniStr->Buffer[i] == L'\0') break;
         WCHAR c = ToLowerW(uniStr->Buffer[i]);
         hash = (hash ^ static_cast<ULONG>(c)) * FNV_PRIME_32;
     }
@@ -40,6 +42,8 @@ inline ULONG RuntimeHashBuffer(const WCHAR* buffer, USHORT chars) {
     
     ULONG hash = FNV_OFFSET_BASIS_32;
     for (USHORT i = 0; i < chars; ++i) {
+        // OMEGA-XX: Stop at null to match CompileTimeHashW/RuntimeHashUnicodeString
+        if (buffer[i] == L'\0') break;
         WCHAR c = ToLowerW(buffer[i]);
         hash = (hash ^ static_cast<ULONG>(c)) * FNV_PRIME_32;
     }

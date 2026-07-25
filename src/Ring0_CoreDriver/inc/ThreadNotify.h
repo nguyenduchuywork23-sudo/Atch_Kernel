@@ -7,8 +7,8 @@
 extern "C" {
 #endif
 
-NTSTATUS InitThreadNotify();
-void UnloadThreadNotify();
+NTSTATUS InitThreadNotify(VOID);
+void UnloadThreadNotify(VOID);
 
 #ifdef __cplusplus
 }
