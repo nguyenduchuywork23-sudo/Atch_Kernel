@@ -32,6 +32,11 @@ BOOLEAN DetectHypervisor() {
     // Initialize MSR_LSTAR baseline dynamically at load time
     InterlockedExchange64((LONG64 volatile*)&g_BaselineMsrLstar, (LONG64)__readmsr(MSR_LSTAR));
     
+    // [TESTING BYPASS] Tạm thời bỏ qua Anti-VM để test trên Proxmox / KVM an toàn
+    AtchPrint(("AtchKernel: [WARNING] Anti-VM is bypassed for testing in VM!\n"));
+    return FALSE;
+
+#if 0
     int cpuInfo[4] = {0};
 
     // 1. CPUID Leaf 1 (Basic check)
@@ -123,5 +128,6 @@ BOOLEAN DetectHypervisor() {
     
     AtchPrint(("AtchKernel: No hypervisor detected.\n"));
     return FALSE;
+#endif
 }
 
