@@ -98,6 +98,11 @@ BOOLEAN IsProcessInActiveList(PEPROCESS TargetProcess, ULONG ListOffset) {
 }
 
 void CheckAntiDKOM() {
+    // OMEGA-XV: Defensive IRQL guard — PsLookupProcessByProcessId requires PASSIVE_LEVEL.
+    // Currently called via IoQueueWorkItem (always PASSIVE_LEVEL), but guard prevents BSOD
+    // if this function is ever called from a different context in the future.
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) return;
+
     // OMEGA-II M05: Thread-safe offset caching with interlocked operations
     ULONG listOffset = (ULONG)InterlockedOr((LONG volatile*)&g_CachedListOffset, 0);
     if (listOffset == OFFSET_NOT_INITIALIZED) {

@@ -55,8 +55,9 @@ void CheckMemoryScanner() {
     ULONG clientPid = GetExamClientProcessId();
     if (clientPid == 0) return;
 
-    // OMEGA-FINAL M01: Defensive IRQL assertion — ZwOpenProcess requires PASSIVE_LEVEL
-    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    // OMEGA-XVI: Runtime IRQL guard — ZwOpenProcess requires PASSIVE_LEVEL.
+    // NT_ASSERT only fires in debug builds; this guard protects release builds too.
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) return;
 
     HANDLE processHandle = NULL;
     OBJECT_ATTRIBUTES objAttr;

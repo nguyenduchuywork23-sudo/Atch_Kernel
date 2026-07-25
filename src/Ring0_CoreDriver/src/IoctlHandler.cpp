@@ -15,19 +15,34 @@ extern WDFDEVICE g_ControlDevice;
 extern "C" PCHAR PsGetProcessImageFileName(PEPROCESS Process);
 
 static volatile WDFQUEUE g_NotificationQueue = NULL;
-static volatile ULONG g_ClientProcessId = 0;
-static volatile ULONG g_ClientProcessId_Inverted = 0xFFFFFFFF;
+// OMEGA-XVI: Atomic 64-bit packed PID + Inverted PID.
+// Low 32 bits = PID, High 32 bits = ~PID. Eliminates race condition
+// between separate 32-bit reads that could cause false BSOD in VerifyClientPid.
+// Default: PID=0, ~PID=0xFFFFFFFF → packed = 0xFFFFFFFF00000000ULL
+static volatile LONGLONG g_ClientPidPacked = (LONGLONG)0xFFFFFFFF00000000ULL;
+
 // OMEGA-VII-R3-006: Store EPROCESS pointer to prevent PID-recycling attacks
 // in deferred EmergencyCleanupExam. Referenced to pin the object.
 static volatile PEPROCESS g_ClientEProcess = NULL;
 
-// OMEGA-XV: Race-safe VerifyClientPid — only bugchecks when PID is non-zero
-// and the inverted copy disagrees (true bit-flip).
+// Helper: Pack a PID into the 64-bit atomic format
+static __forceinline LONGLONG PackPid(ULONG pid) {
+    return (LONGLONG)(((ULONGLONG)(~pid) << 32) | (ULONGLONG)pid);
+}
+
+// Helper: Atomic read of packed PID
+static __forceinline ULONG ReadClientPid() {
+    LONGLONG packed = InterlockedOr64(&g_ClientPidPacked, 0);
+    return (ULONG)(packed & 0xFFFFFFFF);
+}
+
+// OMEGA-XVI: Race-safe VerifyClientPid — reads PID + ~PID atomically in one
+// 64-bit operation, eliminating the TOCTOU window that could cause false BSOD.
 BOOLEAN VerifyClientPid(ULONG callerPid) {
-    ULONG pid = (ULONG)InterlockedOr((LONG volatile*)&g_ClientProcessId, 0);
-    ULONG pidInv = (ULONG)InterlockedOr((LONG volatile*)&g_ClientProcessId_Inverted, 0);
+    LONGLONG packed = InterlockedOr64(&g_ClientPidPacked, 0);
+    ULONG pid = (ULONG)(packed & 0xFFFFFFFF);
+    ULONG pidInv = (ULONG)((ULONGLONG)packed >> 32);
     // Only check integrity when PID is actively set (non-zero).
-    // During cleanup transitions pid may be 0 while pidInv is stale — that is NOT an attack.
     if (pid != 0 && pid != ~pidInv) {
         AtchPrint(("AtchKernel: [OMEGA-X] CRITICAL - ROWHAMMER BIT-FLIP DETECTED ON PID!\n"));
         KeBugCheckEx(0x139, 3, pid, pidInv, 0); // KERNEL_SECURITY_CHECK_FAILURE
@@ -171,7 +186,7 @@ VOID HeartbeatThreadRoutine(PVOID Context)
         if (InterlockedOr((LONG volatile*)&g_HasHeartbeatThread, 0) != 1 ||
             InterlockedOr((LONG volatile*)&g_HeartbeatEpoch, 0) != (LONG)myEpoch) break;
 
-        ULONG clientPid = (ULONG)InterlockedOr((LONG volatile*)&g_ClientProcessId, 0);
+        ULONG clientPid = ReadClientPid();
         if (clientPid != 0) VerifyClientPid(clientPid); // OMEGA-X integrity check
         if (clientPid == 0) continue;
 
@@ -403,7 +418,7 @@ void EvtIoDeviceControl(
             ExAcquireFastMutex(&g_ExamMutex);
 
             // OMEGA-XIV: Safe initialization under mutex
-            if (InterlockedOr((LONG volatile*)&g_ClientProcessId, 0) != 0) {
+            if (ReadClientPid() != 0) {
                 ExReleaseFastMutex(&g_ExamMutex);
                 status = STATUS_ALREADY_INITIALIZED;
                 break;
@@ -411,7 +426,8 @@ void EvtIoDeviceControl(
 
             // Now guaranteed to succeed, and exam is currently inactive.
             // Safe to set Inverted and EProcess BEFORE PID to prevent VerifyClientPid/ObCallback races.
-            InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)(~callerPid));
+            // OMEGA-XVI: Atomic 64-bit write of packed PID + ~PID
+            InterlockedExchange64(&g_ClientPidPacked, PackPid(callerPid));
             
             PEPROCESS callerEProcess = IoGetRequestorProcess(WdfRequestWdmGetIrp(Request));
             if (callerEProcess != NULL) {
@@ -419,8 +435,9 @@ void EvtIoDeviceControl(
             }
             InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, callerEProcess);
 
+            // OMEGA-XVI: PID already set atomically via PackPid above (line 430).
+            // KeMemoryBarrier not needed — InterlockedExchange64 is a full barrier.
             KeMemoryBarrier();
-            InterlockedCompareExchange((LONG volatile*)&g_ClientProcessId, callerPid, 0);
 
             // OMEGA-II CRIT-04: Store full token instead of hash
             RtlCopyMemory(g_SessionTokenStore, pData->SessionToken, sizeof(g_SessionTokenStore));
@@ -514,8 +531,8 @@ void EvtIoDeviceControl(
                 }
                 ExAcquireFastMutex(&g_ExamMutex);
                 if (InterlockedOr((LONG volatile*)&g_HeartbeatEpoch, 0) == (LONG)currentEpoch) {
-                    InterlockedExchange((LONG volatile*)&g_ClientProcessId, 0);
-                    InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
+                    // OMEGA-XVI: Atomic 64-bit clear of packed PID
+                    InterlockedExchange64(&g_ClientPidPacked, PackPid(0));
                     // OMEGA-VIII-R1-001: Release pinned EPROCESS on rollback to prevent kernel object leak.
                     PEPROCESS rollbackEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
                     if (rollbackEProcess != NULL) {
@@ -572,6 +589,13 @@ void EvtIoDeviceControl(
             PEPROCESS callerProcess = IoGetRequestorProcess(WdfRequestWdmGetIrp(Request));
             PEPROCESS storedProcess = NULL;
             HANDLE examPidHandle = (HANDLE)(ULONG_PTR)callerPid;
+
+            // OMEGA-XV: IRQL guard — PsLookupProcessByProcessId requires PASSIVE_LEVEL.
+            if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+                status = STATUS_UNSUCCESSFUL;
+                break;
+            }
+
             NTSTATUS lookupStatus = PsLookupProcessByProcessId(examPidHandle, &storedProcess);
             if (NT_SUCCESS(lookupStatus)) {
                 BOOLEAN processMatch = (callerProcess == storedProcess);
@@ -587,20 +611,22 @@ void EvtIoDeviceControl(
                 break;
             }
 
-            // OMEGA-XIV: Runtime IRQL guard
-            if (KeGetCurrentIrql() > APC_LEVEL) {
+            // OMEGA-XIV: Runtime IRQL guard (already verified above, but re-check before FastMutex)
+            if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
                 status = STATUS_UNSUCCESSFUL;
                 break;
             }
             ExAcquireFastMutex(&g_ExamMutex);
 
-            if (InterlockedCompareExchange((LONG volatile*)&g_ClientProcessId, 0, callerPid) != (LONG)callerPid) {
+            // OMEGA-XVI: Atomic 64-bit CAS to clear PID
+            LONGLONG expectedPacked = PackPid(callerPid);
+            LONGLONG clearedPacked = PackPid(0);
+            if (InterlockedCompareExchange64(&g_ClientPidPacked, clearedPacked, expectedPacked) != expectedPacked) {
                 ExReleaseFastMutex(&g_ExamMutex);
                 status = STATUS_ACCESS_DENIED;
                 break;
             }
             AtchPrint(("AtchKernel: Terminate Exam.\n"));
-            InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
             // OMEGA-VII-R3-006: Release pinned EPROCESS reference
             PEPROCESS oldEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
             if (oldEProcess != NULL) {
@@ -910,7 +936,7 @@ void NotifyViolationToRing3(ULONG ProcessId, PCUNICODE_STRING ImagePath, Violati
 
 ULONG GetExamClientProcessId()
 {
-    ULONG pid = (ULONG)InterlockedOr((LONG volatile*)&g_ClientProcessId, 0);
+    ULONG pid = ReadClientPid();
     if (pid != 0) VerifyClientPid(pid);
     return pid;
 }
@@ -945,20 +971,19 @@ void EmergencyCleanupExam(ULONG deadPid)
     ExAcquireFastMutex(&g_ExamMutex);
 
     PVOID threadToWait = NULL;
-    if (InterlockedCompareExchange((LONG volatile*)&g_ClientProcessId, 0, (LONG)deadPid) == (LONG)deadPid) {
-        // OMEGA-VII-R3-006: Validate EPROCESS to prevent PID-recycling false cleanup.
-        // If PID was recycled, PsLookupProcessByProcessId returns a DIFFERENT EPROCESS
-        // than what we stored — we must NOT clear the session.
+    // OMEGA-XVI: Atomic 64-bit CAS to clear PID
+    LONGLONG expectedPacked = PackPid(deadPid);
+    LONGLONG clearedPacked = PackPid(0);
+    if (InterlockedCompareExchange64(&g_ClientPidPacked, clearedPacked, expectedPacked) == expectedPacked) {
+        // We own the cleanup now. Extract the stored EPROCESS.
         PEPROCESS storedEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
         if (NT_SUCCESS(lookupStatus) && currentEProcess != NULL) {
             // PID is alive again (recycled). Check if it's the SAME process.
             if (currentEProcess != storedEProcess) {
                 // PID was recycled to a DIFFERENT process. Abort cleanup!
                 AtchPrint(("AtchKernel: EmergencyCleanupExam - PID %lu recycled! Aborting cleanup.\n", deadPid));
-                // Restore PID since CAS already cleared it
-                InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)(~deadPid));
-                KeMemoryBarrier();
-                InterlockedExchange((LONG volatile*)&g_ClientProcessId, (LONG)deadPid);
+                // Restore PID since CAS already cleared it — atomic 64-bit write
+                InterlockedExchange64(&g_ClientPidPacked, PackPid(deadPid));
                 InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, storedEProcess);
                 ObDereferenceObject(currentEProcess);
                 ExReleaseFastMutex(&g_ExamMutex);
@@ -970,7 +995,7 @@ void EmergencyCleanupExam(ULONG deadPid)
         if (storedEProcess != NULL) {
             ObDereferenceObject(storedEProcess);
         }
-        InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
+        // g_ClientPidPacked already cleared by CAS above (PackPid(0))
         AtchPrint(("AtchKernel: EmergencyCleanupExam - clearing state for dead PID %lu\n", deadPid));
         RtlSecureZeroMemory(g_SessionTokenStore, sizeof(g_SessionTokenStore));
         RtlSecureZeroMemory((PVOID)g_DynamicBlacklistHashes, sizeof(g_DynamicBlacklistHashes));
@@ -1004,8 +1029,8 @@ void ClearExamState() {
     // OMEGA-XIV: Runtime IRQL guard
     if (KeGetCurrentIrql() > APC_LEVEL) return;
     ExAcquireFastMutex(&g_ExamMutex);
-    InterlockedExchange((LONG volatile*)&g_ClientProcessId, 0);
-    InterlockedExchange((LONG volatile*)&g_ClientProcessId_Inverted, (LONG)0xFFFFFFFF);
+    // OMEGA-XVI: Atomic 64-bit clear of packed PID
+    InterlockedExchange64(&g_ClientPidPacked, PackPid(0));
     // OMEGA-VII-R3-006: Release pinned EPROCESS on unload
     PEPROCESS oldEProcess = (PEPROCESS)InterlockedExchangePointer((PVOID volatile*)&g_ClientEProcess, NULL);
     if (oldEProcess != NULL) {
